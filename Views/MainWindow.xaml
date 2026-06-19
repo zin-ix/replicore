@@ -1,0 +1,489 @@
+<Window x:Class="Replicore.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Replicore"
+        Height="760" Width="980"
+        MinHeight="680" MinWidth="850"
+        Background="{StaticResource AppBackgroundBrush}"
+        WindowStartupLocation="CenterScreen"
+        FontFamily="{StaticResource AppFont}"
+        WindowStyle="None"
+        AllowsTransparency="False">
+
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="48"
+                      ResizeBorderThickness="6"
+                      GlassFrameThickness="1"/>
+    </WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <DataTemplate x:Key="DiskCheckboxRowTemplate">
+            <Grid Margin="4,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="10"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <CheckBox Grid.Column="0" IsChecked="{Binding IsSelected, Mode=TwoWay}" VerticalAlignment="Center"/>
+                <Grid Grid.Column="2" VerticalAlignment="Center">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Text="{Binding NameLine}"
+                               FontFamily="Segoe UI" FontSize="12.5" FontWeight="Medium"
+                               Foreground="{StaticResource ForegroundBrush}"/>
+                    <TextBlock Grid.Row="1" Text="{Binding MetaLine}" Margin="0,1,0,0"
+                               FontFamily="Segoe UI" FontSize="10.5"
+                               Foreground="{StaticResource MutedForegroundBrush}"/>
+                </Grid>
+            </Grid>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48"/>   <!-- Custom Title Bar -->
+            <RowDefinition Height="*"/>    <!-- Client Area -->
+        </Grid.RowDefinitions>
+
+        <!-- ===================== CUSTOM TITLE BAR ===================== -->
+        <Grid Grid.Row="0" Background="{StaticResource TitleBarBrush}" VerticalAlignment="Stretch">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            
+            <!-- App Icon & Title -->
+            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
+                <Border Width="24" Height="24" CornerRadius="6" Background="{StaticResource PrimaryBrush}" Margin="0,0,10,0">
+                    <Path Data="M3,3 H17 V8 H3 Z M3,12 H17 V17 H3 Z" Stretch="Uniform" Width="11" Height="11"
+                          Fill="{StaticResource PrimaryForegroundBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+                <TextBlock Text="Replicore" FontWeight="SemiBold" FontSize="13" Foreground="{StaticResource ForegroundBrush}"/>
+                <Border CornerRadius="4" Background="{StaticResource MutedBrush}" Margin="8,0,0,0" Padding="6,2">
+                    <TextBlock Text="V1.2" FontSize="10" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}"/>
+                </Border>
+            </StackPanel>
+
+            <!-- Window Drag Area (transparent fill captures hits) -->
+            <Grid Grid.Column="1" Background="Transparent"/>
+
+            <!-- Window Controls -->
+            <StackPanel Grid.Column="2" Orientation="Horizontal" WindowChrome.IsHitTestVisibleInChrome="True">
+                <Button x:Name="MinButton" Width="46" Height="48" Style="{StaticResource WindowChromeButton}" Content="&#xE921;" Click="MinButton_Click"/>
+                <Button x:Name="MaxButton" Width="46" Height="48" Style="{StaticResource WindowChromeButton}" Content="&#xE922;" Click="MaxButton_Click"/>
+                <Button x:Name="CloseButton" Width="46" Height="48" Style="{StaticResource WindowChromeCloseButton}" Content="&#xE8BB;" Click="CloseButton_Click"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- ===================== CLIENT AREA ===================== -->
+        <Grid Grid.Row="1" Margin="24,12,24,24">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>   <!-- Subtitle -->
+                <RowDefinition Height="*"/>      <!-- Main Split Grid -->
+            </Grid.RowDefinitions>
+
+            <!-- Subtitle info -->
+            <Grid Grid.Row="0" Margin="4,0,4,16">
+                <StackPanel>
+                    <TextBlock Text="Disk Cloning &amp; Bare-Metal Backup Utility" FontWeight="SemiBold" FontSize="15" Foreground="{StaticResource ForegroundBrush}"/>
+                    <TextBlock Text="Safely snapshot your system disk using Volume Shadow Copy (VSS) or perform low-level direct sector cloning." Style="{StaticResource SubheadingText}" Margin="0,2,0,0"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- Main Content Split Grid -->
+            <Grid Grid.Row="1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="430"/>  <!-- Left Column: Settings -->
+                    <ColumnDefinition Width="24"/>   <!-- Spacer -->
+                    <ColumnDefinition Width="*"/>    <!-- Right Column: Progress & Tabs -->
+                </Grid.ColumnDefinitions>
+
+                <!-- ===================== LEFT COLUMN ===================== -->
+                <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="0,0,4,0">
+                        
+                        <!-- MASTER (source) -->
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,8">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Style="{StaticResource DotBadge}"
+                                            Background="{StaticResource PrimaryBrush}" Margin="0,0,6,0"/>
+                                    <TextBlock Grid.Column="1" Text="MASTER · SOURCE" Style="{StaticResource EyebrowText}"/>
+                                    
+                                    <!-- Master SMART health indicator -->
+                                    <Border Grid.Column="2" x:Name="MasterHealthPill" Style="{StaticResource Pill}" Padding="6,2" Visibility="Collapsed">
+                                        <TextBlock x:Name="MasterHealthText" Text="Healthy" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource SuccessBrush}"/>
+                                    </Border>
+                                </Grid>
+
+                                <ComboBox x:Name="MasterComboBox" Style="{StaticResource DiskComboBox}"
+                                          ItemTemplate="{StaticResource DiskRowTemplate}"/>
+
+                                <Border x:Name="MasterDetailBorder" Margin="0,10,0,0" Padding="12,10"
+                                        Background="{StaticResource MutedBrush}" CornerRadius="6">
+                                    <StackPanel>
+                                        <TextBlock x:Name="MasterDetailText" Style="{StaticResource SubheadingText}"
+                                                   FontWeight="Medium" Foreground="{StaticResource ForegroundBrush}"/>
+                                        
+                                        <TextBlock Text="Partitions" Style="{StaticResource EyebrowText}" FontSize="10" Margin="0,8,0,4"/>
+                                        <ItemsControl x:Name="MasterPartitionsControl" Margin="0,2,0,0">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel Orientation="Horizontal"/>
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Margin="0,2,6,4" Padding="8,6" CornerRadius="4" 
+                                                            Background="{StaticResource CardBrush}" 
+                                                            BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1"
+                                                            Width="110">
+                                                        <StackPanel>
+                                                            <Grid>
+                                                                <TextBlock Text="{Binding DriveLetter}" FontWeight="Bold" FontSize="11" Foreground="{StaticResource PrimaryBrush}"/>
+                                                                <TextBlock Text="{Binding FileSystem}" FontSize="9" Foreground="{StaticResource MutedForegroundBrush}" HorizontalAlignment="Right"/>
+                                                            </Grid>
+                                                            <TextBlock Text="{Binding DisplayLabel}" FontSize="10" FontWeight="Medium" Foreground="{StaticResource ForegroundBrush}" TextTrimming="CharacterEllipsis" Margin="0,1,0,3"/>
+                                                            <ProgressBar Style="{StaticResource MiniProgressBar}" Value="{Binding UsedPercent, Mode=OneWay}" Height="3" Margin="0,0,0,3" Foreground="{StaticResource PrimaryBrush}"/>
+                                                            <TextBlock Text="{Binding UsedSpaceFormatted}" FontSize="9" Foreground="{StaticResource MutedForegroundBrush}"/>
+                                                            <TextBlock Text="{Binding SizeFormatted, StringFormat='of {0}'}" FontSize="9" Foreground="{StaticResource MutedForegroundBrush}"/>
+                                                        </StackPanel>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <TextBlock x:Name="MasterNoPartitionsText" Text="No partitions detected" Style="{StaticResource SubheadingText}" FontStyle="Italic" Margin="0,4,0,0" Visibility="Collapsed"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Connector arrow -->
+                        <Border HorizontalAlignment="Center" Width="28" Height="28" CornerRadius="14"
+                                Background="{StaticResource MutedBrush}"
+                                BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" Margin="0,2">
+                            <TextBlock Text="↓" FontSize="14" FontWeight="SemiBold"
+                                       Foreground="{StaticResource MutedForegroundBrush}"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,0,2"/>
+                        </Border>
+
+                        <!-- TARGET (destination) -->
+                        <Border Style="{StaticResource Card}" Margin="0,2,0,8">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Style="{StaticResource DotBadge}"
+                                            Background="{StaticResource SuccessBrush}" Margin="0,0,6,0"/>
+                                    <TextBlock Grid.Column="1" Text="TARGET · DESTINATION" Style="{StaticResource EyebrowText}"/>
+                                    
+                                    <!-- Target SMART health indicator -->
+                                    <Border Grid.Column="2" x:Name="TargetHealthPill" Style="{StaticResource Pill}" Padding="6,2" Visibility="Collapsed">
+                                        <TextBlock x:Name="TargetHealthText" Text="Healthy" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource SuccessBrush}"/>
+                                    </Border>
+                                </Grid>
+
+                                <ListBox x:Name="TargetsListBox" Height="150" 
+                                         BorderThickness="1" BorderBrush="{StaticResource CardBorderBrush}" Background="{StaticResource BackgroundBrush}"
+                                         ItemTemplate="{StaticResource DiskCheckboxRowTemplate}"
+                                         ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+
+                                <Border x:Name="TargetDetailBorder" Margin="0,10,0,0" Padding="12,10"
+                                        Background="{StaticResource MutedBrush}" CornerRadius="6">
+                                    <StackPanel>
+                                        <TextBlock x:Name="TargetDetailText" Style="{StaticResource SubheadingText}"
+                                                   FontWeight="Medium" Foreground="{StaticResource ForegroundBrush}"/>
+                                        
+                                        <TextBlock Text="Partitions" Style="{StaticResource EyebrowText}" FontSize="10" Margin="0,8,0,4"/>
+                                        <ItemsControl x:Name="TargetPartitionsControl" Margin="0,2,0,0">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel Orientation="Horizontal"/>
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Margin="0,2,6,4" Padding="8,6" CornerRadius="4" 
+                                                            Background="{StaticResource CardBrush}" 
+                                                            BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1"
+                                                            Width="110">
+                                                        <StackPanel>
+                                                            <Grid>
+                                                                <TextBlock Text="{Binding DriveLetter}" FontWeight="Bold" FontSize="11" Foreground="{StaticResource SuccessBrush}"/>
+                                                                <TextBlock Text="{Binding FileSystem}" FontSize="9" Foreground="{StaticResource MutedForegroundBrush}" HorizontalAlignment="Right"/>
+                                                            </Grid>
+                                                            <TextBlock Text="{Binding DisplayLabel}" FontSize="10" FontWeight="Medium" Foreground="{StaticResource ForegroundBrush}" TextTrimming="CharacterEllipsis" Margin="0,1,0,3"/>
+                                                            <ProgressBar Style="{StaticResource MiniProgressBar}" Value="{Binding UsedPercent, Mode=OneWay}" Height="3" Margin="0,0,0,3" Foreground="{StaticResource SuccessBrush}"/>
+                                                            <TextBlock Text="{Binding UsedSpaceFormatted}" FontSize="9" Foreground="{StaticResource MutedForegroundBrush}"/>
+                                                            <TextBlock Text="{Binding SizeFormatted, StringFormat='of {0}'}" FontSize="9" Foreground="{StaticResource MutedForegroundBrush}"/>
+                                                        </StackPanel>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <TextBlock x:Name="TargetNoPartitionsText" Text="No partitions detected" Style="{StaticResource SubheadingText}" FontStyle="Italic" Margin="0,4,0,0" Visibility="Collapsed"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- CONFIG & ACTIONS CARD -->
+                        <Border Style="{StaticResource Card}" Padding="16" Margin="0,2,0,8">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/> <!-- Mode Selection Label & RadioButtons -->
+                                    <RowDefinition Height="Auto"/> <!-- Post-Backup Automation Action -->
+                                    <RowDefinition Height="12"/>   <!-- Spacer -->
+                                    <RowDefinition Height="Auto"/> <!-- Action Buttons -->
+                                </Grid.RowDefinitions>
+
+                                <!-- Row 0: Mode Selection -->
+                                <StackPanel Grid.Row="0" Margin="0,0,0,12">
+                                    <TextBlock Text="Mode" Style="{StaticResource LabelText}" Margin="0,0,0,6"/>
+                                    <StackPanel Orientation="Vertical">
+                                        <RadioButton x:Name="ImageBackupRadio" Content="Image Backup (Safe)" IsChecked="True" GroupName="CloneMode" Margin="0,0,0,6" Checked="ModeRadio_Checked"/>
+                                        <RadioButton x:Name="DirectMirrorRadio" Content="Direct Disk Mirror (Wipe Target)" GroupName="CloneMode" Checked="ModeRadio_Checked"/>
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <!-- Row 1: After Action -->
+                                <Grid Grid.Row="1">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="8"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="After backup/clone:" VerticalAlignment="Center" Style="{StaticResource BodyText}" FontWeight="Medium"/>
+                                    <ComboBox Grid.Column="2" x:Name="PostBackupActionComboBox" SelectedIndex="0" Style="{StaticResource CleanComboBox}" HorizontalAlignment="Stretch">
+                                        <ComboBoxItem Content="Do nothing"/>
+                                        <ComboBoxItem Content="Shut down PC"/>
+                                        <ComboBoxItem Content="Put PC to sleep"/>
+                                    </ComboBox>
+                                </Grid>
+
+                                <!-- Row 3: Action Buttons -->
+                                <Grid Grid.Row="3">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="8"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    
+                                    <Button x:Name="RefreshButton" Grid.Column="0" Content="Scan Disks"
+                                            Style="{StaticResource OutlineButton}" Height="38" HorizontalAlignment="Stretch"
+                                            Click="RefreshButton_Click"/>
+
+                                    <Grid Grid.Column="2">
+                                        <Button x:Name="StartBackupButton" Content="Start Backup"
+                                                Style="{StaticResource PrimaryButton}" Height="38" HorizontalAlignment="Stretch"
+                                                Click="StartBackupButton_Click"/>
+                                        <Button x:Name="CancelBackupButton" Content="Cancel Backup"
+                                                Style="{StaticResource DestructiveButton}" Height="38" HorizontalAlignment="Stretch"
+                                                Visibility="Collapsed" Click="CancelBackupButton_Click"/>
+                                    </Grid>
+                                </Grid>
+                            </Grid>
+                        </Border>
+
+                        <!-- Direct Clone Wiping Warning Banner -->
+                        <Border Background="#FEF2F2" BorderBrush="#FCA5A5" BorderThickness="1" CornerRadius="6" Padding="12,10" Margin="0,2,0,0" x:Name="DirectCloneWarningBanner" Visibility="Collapsed">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="⚠" FontSize="14" FontWeight="Bold" Foreground="{StaticResource DestructiveBrush}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <TextBlock Grid.Column="1" Text="WARNING: Direct Disk Mirroring will completely and permanently OVERWRITE all partitions, filesystems, and data on the target drive. Verify that you have selected the correct target disk!" 
+                                           Style="{StaticResource SubheadingText}" FontSize="10.5" Foreground="{StaticResource DestructiveBrush}" VerticalAlignment="Center" TextWrapping="Wrap" FontWeight="SemiBold"/>
+                            </Grid>
+                        </Border>
+                        
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- ===================== RIGHT COLUMN ===================== -->
+                <Grid Grid.Column="2" VerticalAlignment="Stretch">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/> <!-- Progress Card -->
+                        <RowDefinition Height="*"/>    <!-- Tabs -->
+                    </Grid.RowDefinitions>
+
+                    <!-- Standalone Progress Card -->
+                    <Border Style="{StaticResource Card}" Padding="16" x:Name="ProgressCard" Margin="0,0,0,16" Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock x:Name="ProgressTitleText" Text="Active Operations Progress" FontWeight="SemiBold" Style="{StaticResource BodyText}" Margin="0,0,0,12"/>
+                            <ItemsControl x:Name="ActiveProgressesControl">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="0,0,0,1" Padding="0,8,0,8">
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                </Grid.RowDefinitions>
+                                                <Grid Grid.Row="0" Margin="0,0,0,6">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/> <!-- Disk Name -->
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/> <!-- Speed -->
+                                                        <ColumnDefinition Width="12"/>
+                                                        <ColumnDefinition Width="Auto"/> <!-- ETA -->
+                                                        <ColumnDefinition Width="12"/>
+                                                        <ColumnDefinition Width="Auto"/> <!-- Percent -->
+                                                        <ColumnDefinition Width="12"/>
+                                                        <ColumnDefinition Width="Auto"/> <!-- Status Badge -->
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="{Binding TargetDiskName}" FontWeight="SemiBold" FontSize="11.5" Foreground="{StaticResource ForegroundBrush}"/>
+                                                    
+                                                    <TextBlock Grid.Column="2" Text="{Binding Speed}" FontFamily="Consolas" FontSize="11.5" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}" HorizontalAlignment="Right"/>
+                                                    <TextBlock Grid.Column="4" Text="{Binding Eta}" FontSize="11" Foreground="{StaticResource MutedForegroundBrush}" VerticalAlignment="Center"/>
+                                                    <TextBlock Grid.Column="6" Text="{Binding Percent, StringFormat={}{0}%}" FontFamily="Consolas" FontSize="11.5" FontWeight="Bold" Foreground="{StaticResource ForegroundBrush}"/>
+                                                    
+                                                    <!-- Status dot badge -->
+                                                    <Border Grid.Column="8" CornerRadius="4" Padding="6,2" Background="{StaticResource MutedBrush}">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <Border Width="6" Height="6" CornerRadius="3" Background="{Binding StatusColor}" Margin="0,0,4,0"/>
+                                                            <TextBlock Text="{Binding Status}" FontSize="9.5" FontWeight="SemiBold" Foreground="{StaticResource MutedForegroundBrush}"/>
+                                                        </StackPanel>
+                                                    </Border>
+                                                </Grid>
+                                                <ProgressBar Grid.Row="1" Height="6" Minimum="0" Maximum="100" Value="{Binding Percent, Mode=OneWay}" Style="{StaticResource CleanProgressBar}"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- TabControl (Activity Log, Backup History, Schedule Backups) -->
+                    <TabControl Grid.Row="1" x:Name="MainTabControl" VerticalAlignment="Stretch">
+                        
+                        <!-- TAB 1: ACTIVITY LOG -->
+                        <TabItem Header="Activity Log">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+
+                                <Grid Grid.Row="0" Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Operation Output Log" Style="{StaticResource LabelText}" Margin="0"/>
+                                    <TextBlock Grid.Column="2" x:Name="LogCountText" Text="" Style="{StaticResource SubheadingText}" HorizontalAlignment="Right"/>
+                                </Grid>
+
+                                <Border Grid.Row="1" Background="{StaticResource ConsoleBrush}" CornerRadius="6" BorderThickness="1" BorderBrush="{StaticResource CardBorderBrush}">
+                                    <ScrollViewer x:Name="LogScrollViewer" Padding="14,12" VerticalScrollBarVisibility="Auto">
+                                        <StackPanel x:Name="LogPanel"/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Grid>
+                        </TabItem>
+
+                        <!-- TAB 2: BACKUP HISTORY -->
+                        <TabItem Header="Backup History" x:Name="HistoryTab">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+
+                                <Grid Grid.Row="0" Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Button x:Name="LoadHistoryButton" Grid.Column="0" Content="Scan Target for Backups" Style="{StaticResource OutlineButton}" Click="LoadHistoryButton_Click"/>
+                                    <TextBlock Grid.Column="1" Text="Query Windows Image Backups stored on the currently selected Target volume." VerticalAlignment="Center" Margin="12,0,0,0" Style="{StaticResource SubheadingText}" TextTrimming="CharacterEllipsis"/>
+                                </Grid>
+
+                                <ListView Grid.Row="1" x:Name="HistoryListView" BorderThickness="1" BorderBrush="{StaticResource CardBorderBrush}" Background="{StaticResource BackgroundBrush}">
+                                    <ListView.View>
+                                        <GridView>
+                                            <GridViewColumn Header="Date &amp; Time" Width="140" DisplayMemberBinding="{Binding Timestamp}"/>
+                                            <GridViewColumn Header="Version ID" Width="140" DisplayMemberBinding="{Binding VersionId}"/>
+                                            <GridViewColumn Header="Source Disk Info" Width="140" DisplayMemberBinding="{Binding Location}"/>
+                                            <GridViewColumn Header="Recoverable Items" Width="220" DisplayMemberBinding="{Binding RecoverableItems}"/>
+                                        </GridView>
+                                    </ListView.View>
+                                </ListView>
+                            </Grid>
+                        </TabItem>
+
+                        <!-- TAB 3: SCHEDULE BACKUPS -->
+                        <TabItem Header="Schedule Backups">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0" Text="Automate system image backups using Windows Task Scheduler." Style="{StaticResource LabelText}" Margin="0,0,0,12"/>
+
+                                <Border Grid.Row="1" Background="{StaticResource MutedBrush}" CornerRadius="6" Padding="16" Margin="0,0,0,12">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="100"/>
+                                            <ColumnDefinition Width="16"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="80"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <TextBlock Grid.Column="0" Text="Backup Day:" VerticalAlignment="Center" Margin="0,0,8,0" Style="{StaticResource BodyText}" FontWeight="Medium"/>
+                                        <ComboBox Grid.Column="1" x:Name="ScheduleDayComboBox" SelectedIndex="0" Style="{StaticResource CleanComboBox}">
+                                            <ComboBoxItem Content="Sunday"/>
+                                            <ComboBoxItem Content="Monday"/>
+                                            <ComboBoxItem Content="Tuesday"/>
+                                            <ComboBoxItem Content="Wednesday"/>
+                                            <ComboBoxItem Content="Thursday"/>
+                                            <ComboBoxItem Content="Friday"/>
+                                            <ComboBoxItem Content="Saturday"/>
+                                        </ComboBox>
+
+                                        <TextBlock Grid.Column="3" Text="Start Time:" VerticalAlignment="Center" Margin="0,0,8,0" Style="{StaticResource BodyText}" FontWeight="Medium"/>
+                                        <TextBox Grid.Column="4" x:Name="ScheduleTimeTextBox" Text="02:00" VerticalAlignment="Center" Height="36" Padding="8,6" 
+                                                 VerticalContentAlignment="Center" BorderBrush="{StaticResource InputBorderBrush}" BorderThickness="1" SnapsToDevicePixels="True"/>
+
+                                        <Button Grid.Column="6" x:Name="SaveScheduleButton" Content="Register Task" Style="{StaticResource PrimaryButton}" Click="SaveScheduleButton_Click" Height="36"/>
+                                    </Grid>
+                                </Border>
+
+                                <Border Grid.Row="2" Background="{StaticResource BackgroundBrush}" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                        <StackPanel>
+                                            <TextBlock Text="Automated Scheduled Backups Guidelines:" FontWeight="SemiBold" Style="{StaticResource BodyText}" Margin="0,0,0,6"/>
+                                            <TextBlock Text="• Registers a weekly Windows Task Scheduler task that runs the backup in the background using the SYSTEM account." Style="{StaticResource SubheadingText}" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                                            <TextBlock Text="• The scheduled task will back up the currently selected Master to the currently selected Target volume." Style="{StaticResource SubheadingText}" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                                            <TextBlock Text="• Please make sure both drives remain connected to the computer at the chosen schedule time." Style="{StaticResource SubheadingText}" Margin="0,0,0,16" TextWrapping="Wrap"/>
+                                            <Button x:Name="DeleteScheduleButton" Content="Deregister Existing Task" Style="{StaticResource OutlineButton}" HorizontalAlignment="Left" Click="DeleteScheduleButton_Click"/>
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                </Border>
+                            </Grid>
+                        </TabItem>
+                    </TabControl>
+                </Grid>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>
