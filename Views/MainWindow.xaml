@@ -62,9 +62,9 @@
                           Fill="{StaticResource PrimaryForegroundBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
                 <TextBlock Text="Replicore" FontWeight="SemiBold" FontSize="13" Foreground="{StaticResource ForegroundBrush}"/>
-                <Border CornerRadius="4" Background="{StaticResource MutedBrush}" Margin="8,0,0,0" Padding="6,2">
+                <!-- <Border CornerRadius="4" Background="{StaticResource MutedBrush}" Margin="8,0,0,0" Padding="6,2">
                     <TextBlock Text="V1.2" FontSize="10" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}"/>
-                </Border>
+                </Border> -->
             </StackPanel>
 
             <!-- Window Drag Area (transparent fill captures hits) -->
