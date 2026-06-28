@@ -17,27 +17,88 @@
     </WindowChrome.WindowChrome>
 
     <Window.Resources>
+        <Storyboard x:Key="BlinkCursor">
+            <DoubleAnimation Storyboard.TargetName="BlinkingCursor"
+                             Storyboard.TargetProperty="Opacity"
+                             From="1.0" To="0.0" Duration="0:0:0.5"
+                             AutoReverse="True" RepeatBehavior="Forever"/>
+        </Storyboard>
+        <Storyboard x:Key="TransitionToDashboard">
+            <DoubleAnimation Storyboard.TargetName="TerminalStartGrid"
+                             Storyboard.TargetProperty="Opacity"
+                             From="1.0" To="0.0" Duration="0:0:0.5"/>
+            <DoubleAnimation Storyboard.TargetName="DashboardGrid"
+                             Storyboard.TargetProperty="Opacity"
+                             From="0.0" To="1.0" Duration="0:0:0.5"/>
+        </Storyboard>
+
+        <Style x:Key="LaunchButton" TargetType="Button">
+            <Setter Property="Background" Value="#334155"/>
+            <Setter Property="Foreground" Value="#FFFFFF"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Padding" Value="32,16"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="8"
+                                x:Name="border"
+                                Padding="{TemplateBinding Padding}">
+                            <Border.Effect>
+                                <DropShadowEffect Color="#4F46E5" Opacity="0" BlurRadius="18" ShadowDepth="0"/>
+                            </Border.Effect>
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#1E293B"/>
+                                <Setter TargetName="border" Property="Effect">
+                                    <Setter.Value>
+                                        <DropShadowEffect Color="#4F46E5" Opacity="0.28" BlurRadius="18" ShadowDepth="0"/>
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#0F172A"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <DataTemplate x:Key="DiskCheckboxRowTemplate">
-            <Grid Margin="4,2">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="10"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <CheckBox Grid.Column="0" IsChecked="{Binding IsSelected, Mode=TwoWay}" VerticalAlignment="Center"/>
-                <Grid Grid.Column="2" VerticalAlignment="Center">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-                    <TextBlock Grid.Row="0" Text="{Binding NameLine}"
-                               FontFamily="Segoe UI" FontSize="12.5" FontWeight="Medium"
-                               Foreground="{StaticResource ForegroundBrush}"/>
-                    <TextBlock Grid.Row="1" Text="{Binding MetaLine}" Margin="0,1,0,0"
-                               FontFamily="Segoe UI" FontSize="10.5"
-                               Foreground="{StaticResource MutedForegroundBrush}"/>
+            <Border Margin="3,2" Padding="8,7" CornerRadius="6" x:Name="RowBorder">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="10"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <CheckBox Grid.Column="0" IsChecked="{Binding IsSelected, Mode=TwoWay}" VerticalAlignment="Center"/>
+                    <Grid Grid.Column="2" VerticalAlignment="Center">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0" Text="{Binding NameLine}"
+                                   FontFamily="Segoe UI" FontSize="12.5" FontWeight="Medium"
+                                   Foreground="{StaticResource ForegroundBrush}"/>
+                        <TextBlock Grid.Row="1" Text="{Binding MetaLine}" Margin="0,1,0,0"
+                                   FontFamily="Segoe UI" FontSize="10.5"
+                                   Foreground="{StaticResource MutedForegroundBrush}"/>
+                    </Grid>
                 </Grid>
-            </Grid>
+            </Border>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                    <Setter TargetName="RowBorder" Property="Background" Value="{StaticResource AccentBrush}"/>
+                </DataTrigger>
+            </DataTemplate.Triggers>
         </DataTemplate>
     </Window.Resources>
 
@@ -79,7 +140,7 @@
         </Grid>
 
         <!-- ===================== CLIENT AREA ===================== -->
-        <Grid Grid.Row="1" Margin="24,12,24,24">
+        <Grid x:Name="DashboardGrid" Grid.Row="1" Margin="24,12,24,24" Visibility="Collapsed" Opacity="0">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>   <!-- Subtitle -->
                 <RowDefinition Height="*"/>      <!-- Main Split Grid -->
@@ -194,10 +255,21 @@
                                     </Border>
                                 </Grid>
 
-                                <ListBox x:Name="TargetsListBox" Height="150" 
-                                         BorderThickness="1" BorderBrush="{StaticResource CardBorderBrush}" Background="{StaticResource BackgroundBrush}"
-                                         ItemTemplate="{StaticResource DiskCheckboxRowTemplate}"
-                                         ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                                <Grid>
+                                    <ListBox x:Name="TargetsListBox" Height="150" 
+                                             BorderThickness="1" BorderBrush="{StaticResource CardBorderBrush}" Background="{StaticResource BackgroundBrush}"
+                                             ItemTemplate="{StaticResource DiskCheckboxRowTemplate}"
+                                             ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+
+                                    <!-- Empty state shown when no target disks are available -->
+                                    <StackPanel x:Name="TargetsEmptyState" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                IsHitTestVisible="False" Visibility="Collapsed">
+                                        <TextBlock Text="No other disks detected" Style="{StaticResource SubheadingText}"
+                                                   FontSize="12" HorizontalAlignment="Center"/>
+                                        <TextBlock Text="Connect a drive, then click &quot;Scan Disks&quot;" Style="{StaticResource SubheadingText}"
+                                                   FontSize="11" Opacity="0.8" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                </Grid>
 
                                 <Border x:Name="TargetDetailBorder" Margin="0,10,0,0" Padding="12,10"
                                         Background="{StaticResource MutedBrush}" CornerRadius="6">
@@ -484,6 +556,78 @@
                     </TabControl>
                 </Grid>
             </Grid>
+        </Grid>
+
+        <!-- ===================== TERMINAL WELCOME & SCAN SCREEN ===================== -->
+        <Grid x:Name="TerminalStartGrid" Grid.Row="1" Margin="24,12,24,24" Visibility="Visible" Opacity="1">
+            <!-- Center Button Overlay (Styled Card) -->
+            <Border x:Name="StartButtonCenteringGrid" VerticalAlignment="Center" HorizontalAlignment="Center" 
+                    Background="#FFFFFF" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" 
+                    CornerRadius="12" Padding="40,32" Width="440" Visibility="Visible">
+                <Border.Effect>
+                    <DropShadowEffect Color="#0F172A" Opacity="0.06" BlurRadius="20" ShadowDepth="4" Direction="270"/>
+                </Border.Effect>
+                <StackPanel>
+                    <!-- App Title / Subtitle -->
+                    <!-- <TextBlock Text="Replicore System" FontWeight="Bold" FontSize="20" HorizontalAlignment="Center" Foreground="{StaticResource ForegroundBrush}" Margin="0,10,0,0"/> -->
+                    <TextBlock Text="Ready to scan and secure your physical storage" Style="{StaticResource SubheadingText}" HorizontalAlignment="Center" Margin="0,4,0,24" FontSize="12.5"/>
+
+                    <!-- Action Button -->
+                    <Button x:Name="StartScanButton" Content="Initialize Storage Discovery" 
+                            Style="{StaticResource LaunchButton}" Click="StartScanButton_Click"
+                            HorizontalAlignment="Stretch" Height="48"/>
+
+                    <!-- Divider -->
+                    <Border BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="0,1,0,0" Margin="0,24,0,16"/>
+
+                    <!-- Footer Info -->
+                    <TextBlock Text="This tool is open source and not intended for sale" 
+                               HorizontalAlignment="Center" TextAlignment="Center"
+                               FontFamily="Segoe UI" FontSize="11.5" Foreground="{StaticResource MutedForegroundBrush}"/>
+                               
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0">
+                        <TextBlock Text="Developed by " FontFamily="Segoe UI" FontSize="11" Foreground="{StaticResource MutedForegroundBrush}"/>
+                        <TextBlock Text="Zin" FontFamily="Segoe UI" FontSize="11" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Console Border (initially hidden/collapsed) -->
+            <Border x:Name="ConsoleBorder" Background="#FFFFFF" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" CornerRadius="8" Padding="24" Visibility="Collapsed" Opacity="0">
+                <Border.RenderTransform>
+                    <ScaleTransform x:Name="ConsoleScale" ScaleX="0.1" ScaleY="0.05"/>
+                </Border.RenderTransform>
+                <Border.RenderTransformOrigin>0.5,0.5</Border.RenderTransformOrigin>
+                <Grid>
+                    <!-- Console Text Area -->
+                    <ScrollViewer x:Name="TerminalScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel>
+                            <!-- Retro ASCII Title Graphic -->
+                            <TextBlock x:Name="TerminalWelcomeText" FontFamily="Consolas" FontSize="11" LineHeight="14" Foreground="{StaticResource ForegroundBrush}" xml:space="preserve" HorizontalAlignment="Stretch">
+██████╗ ███████╗██████╗ ██╗     ██╗  ██████╗ ██████╗ ██████╗ ███████╗
+██╔══██╗██╔════╝██╔══██╗██║     ██║ ██╔════╝██╔═══██╗██╔══██╗██╔════╝
+██████╔╝█████╗  ██████╔╝██║     ██║ ██║     ██║   ██║██████╔╝█████╗  
+██╔══██╗██╔══╝  ██╔═══╝ ██║     ██║ ██║     ██║   ██║██╔══██╗██╔══╝  
+██║  ██║███████╗██║     ███████╗██║ ╚██████╗╚██████╔╝██║  ██║███████╗
+╚═╝  ╚═╝╚══════╝╚═╝     ╚══════╝╚═╝  ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝
+                            </TextBlock>
+                            
+                            <TextBlock FontFamily="Consolas" FontSize="13" Foreground="{StaticResource MutedForegroundBrush}" Margin="0,12,0,0">
+Replicore System Replication Engine [CLI Mode v1.2.4]
+(c) 2026 Replicore Labs. All rights reserved.
+----------------------------------------------------------------------
+                            </TextBlock>
+
+                            <TextBlock x:Name="TerminalOutputText" FontFamily="Consolas" FontSize="13" LineHeight="20" Foreground="{StaticResource ForegroundBrush}" TextWrapping="Wrap" Margin="0,8,0,0">
+                                <Run x:Name="TerminalTextRun" Text=""/>
+                                <InlineUIContainer x:Name="CursorContainer">
+                                    <TextBlock x:Name="BlinkingCursor" Text="█" Foreground="{StaticResource SuccessBrush}" VerticalAlignment="Center"/>
+                                </InlineUIContainer>
+                            </TextBlock>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </Border>
         </Grid>
     </Grid>
 </Window>

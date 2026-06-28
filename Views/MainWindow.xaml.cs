@@ -1,6 +1,8 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Documents;
 using Replicore.Models;
 using Replicore.Services;
 
@@ -13,16 +15,46 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _cts;
     private int _logCount = 0;
     private readonly System.Collections.ObjectModel.ObservableCollection<CloneTaskProgress> _activeProgresses = new();
+    private List<DiskInfo> _allDisks = new();
 
     public MainWindow()
     {
         InitializeComponent();
-        LoadDisks();
-
+        // Disks will be loaded asynchronously during the terminal-style boot-up sequence
         ActiveProgressesControl.ItemsSource = _activeProgresses;
 
-        MasterComboBox.SelectionChanged += (_, _) => UpdateDetailText(MasterComboBox, MasterDetailText, MasterPartitionsControl, MasterNoPartitionsText, MasterHealthPill, MasterHealthText);
+        this.Loaded += (s, e) =>
+        {
+            if (FindResource("BlinkCursor") is System.Windows.Media.Animation.Storyboard blinkStoryboard)
+            {
+                blinkStoryboard.Begin(this);
+            }
+        };
+
+        MasterComboBox.SelectionChanged += (_, _) =>
+        {
+            UpdateTargetList();
+            UpdateDetailText(MasterComboBox, MasterDetailText, MasterPartitionsControl, MasterNoPartitionsText, MasterHealthPill, MasterHealthText);
+        };
         TargetsListBox.SelectionChanged += (_, _) => UpdateDetailText(TargetsListBox, TargetDetailText, TargetPartitionsControl, TargetNoPartitionsText, TargetHealthPill, TargetHealthText);
+    }
+
+    private void UpdateTargetList()
+    {
+        if (MasterComboBox.SelectedItem is DiskInfo selectedMaster)
+        {
+            // Ensure the selected master is not checked as a target
+            selectedMaster.IsSelected = false;
+            
+            var targets = _allDisks.Where(d => d.Index != selectedMaster.Index).ToList();
+            TargetsListBox.ItemsSource = targets;
+            TargetsEmptyState.Visibility = targets.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        else
+        {
+            TargetsListBox.ItemsSource = _allDisks;
+            TargetsEmptyState.Visibility = _allDisks.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
     }
 
     private void LoadDisks()
@@ -30,17 +62,19 @@ public partial class MainWindow : Window
         try
         {
             var disks = _diskService.GetPhysicalDisks();
+            _allDisks = disks;
 
-            MasterComboBox.ItemsSource = disks;
-            TargetsListBox.ItemsSource = disks;
+            MasterComboBox.ItemsSource = _allDisks;
 
-            if (disks.Count > 0)
+            if (_allDisks.Count > 0)
             {
                 // Default master to the system disk
-                MasterComboBox.SelectedItem = disks.FirstOrDefault(d => d.IsSystemDisk) ?? disks[0];
+                MasterComboBox.SelectedItem = _allDisks.FirstOrDefault(d => d.IsSystemDisk) ?? _allDisks[0];
             }
 
-            AppendLog($"Found {disks.Count} disk(s).");
+            UpdateTargetList();
+
+            AppendLog($"Found {_allDisks.Count} disk(s).");
             UpdateDetailText(MasterComboBox, MasterDetailText, MasterPartitionsControl, MasterNoPartitionsText, MasterHealthPill, MasterHealthText);
             UpdateDetailText(TargetsListBox, TargetDetailText, TargetPartitionsControl, TargetNoPartitionsText, TargetHealthPill, TargetHealthText);
         }
@@ -687,15 +721,23 @@ public partial class MainWindow : Window
     {
         _logCount++;
 
-        var row = new TextBlock
+        var row = new Border
+        {
+            Padding = new Thickness(8, 5, 8, 5),
+            CornerRadius = new CornerRadius(4),
+            Background = _logCount % 2 == 0
+                ? new SolidColorBrush(Color.FromArgb(10, 255, 255, 255))
+                : Brushes.Transparent
+        };
+
+        var textBlock = new TextBlock
         {
             TextWrapping = TextWrapping.Wrap,
             FontFamily = new FontFamily("Consolas"),
-            FontSize = 12,
-            Margin = new Thickness(0, 0, 0, 4)
+            FontSize = 12
         };
 
-        row.Inlines.Add(new System.Windows.Documents.Run($"{DateTime.Now:HH:mm:ss}  ")
+        textBlock.Inlines.Add(new System.Windows.Documents.Run($"{DateTime.Now:HH:mm:ss}  ")
         {
             Foreground = (Brush)FindResource("MutedForegroundBrush")
         });
@@ -719,11 +761,12 @@ public partial class MainWindow : Window
             msgBrush = new SolidColorBrush(Color.FromRgb(129, 140, 248));
         }
 
-        row.Inlines.Add(new System.Windows.Documents.Run(message)
+        textBlock.Inlines.Add(new System.Windows.Documents.Run(message)
         {
             Foreground = msgBrush
         });
 
+        row.Child = textBlock;
         LogPanel.Children.Add(row);
         LogCountText.Text = $"{_logCount} entries";
         LogScrollViewer.ScrollToEnd();
@@ -748,4 +791,179 @@ public partial class MainWindow : Window
     }
     
     private void CloseButton_Click(object sender, RoutedEventArgs e) => SystemCommands.CloseWindow(this);
+
+    private void AppendTerminalText(string text, Brush? foreground = null)
+    {
+        var run = new Run(text);
+        if (foreground != null)
+        {
+            run.Foreground = foreground;
+        }
+        
+        TerminalOutputText.Inlines.InsertBefore(CursorContainer, run);
+        TerminalScrollViewer.ScrollToEnd();
+    }
+
+    private Run CreateTerminalProgressRun(string initialText, Brush? foreground = null)
+    {
+        var run = new Run(initialText);
+        if (foreground != null)
+        {
+            run.Foreground = foreground;
+        }
+        TerminalOutputText.Inlines.InsertBefore(CursorContainer, run);
+        TerminalScrollViewer.ScrollToEnd();
+        return run;
+    }
+
+    private async void StartScanButton_Click(object sender, RoutedEventArgs e)
+    {
+        StartScanButton.IsEnabled = false;
+
+        // 1. Fade out the centered button panel
+        var fadeButton = new DoubleAnimation(1.0, 0.0, TimeSpan.FromSeconds(0.25));
+        StartButtonCenteringGrid.BeginAnimation(OpacityProperty, fadeButton);
+        await Task.Delay(250);
+        StartButtonCenteringGrid.Visibility = Visibility.Collapsed;
+
+        // 2. Make ConsoleBorder visible and animate its expansion (Scale Transform)
+        ConsoleBorder.Visibility = Visibility.Visible;
+        var scaleXAnim = new DoubleAnimation(0.1, 1.0, TimeSpan.FromSeconds(0.4))
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+        };
+        var scaleYAnim = new DoubleAnimation(0.05, 1.0, TimeSpan.FromSeconds(0.4))
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+        };
+        var opacityAnim = new DoubleAnimation(0.0, 1.0, TimeSpan.FromSeconds(0.3));
+
+        ConsoleScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleXAnim);
+        ConsoleScale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleYAnim);
+        ConsoleBorder.BeginAnimation(OpacityProperty, opacityAnim);
+        await Task.Delay(400);
+
+        // 3. Simulated Windows CLI Update & Scan sequence
+        // Define color brushes for light background
+        var darkBrush = new SolidColorBrush(Color.FromRgb(15, 23, 42)); // #0F172A
+        var blueBrush = new SolidColorBrush(Color.FromRgb(37, 99, 235)); // Windows Blue
+        var greenBrush = new SolidColorBrush(Color.FromRgb(5, 150, 105)); // Green (OK)
+        var yellowBrush = new SolidColorBrush(Color.FromRgb(217, 119, 6)); // Amber (Warn)
+        var grayBrush = new SolidColorBrush(Color.FromRgb(100, 116, 139)); // Slate Muted
+
+        // Windows CMD Header
+        AppendTerminalText("Microsoft Windows [Version 10.0.22631.3527]\n", darkBrush);
+        AppendTerminalText("(c) Microsoft Corporation. All rights reserved.\n\n", darkBrush);
+        await Task.Delay(400);
+
+        // Typing out Windows command
+        AppendTerminalText("C:\\Users\\Administrator> ", darkBrush);
+        string cmd = "replicore.exe --scan --verbose\n";
+        foreach (char c in cmd)
+        {
+            AppendTerminalText(c.ToString(), darkBrush);
+            await Task.Delay(25);
+        }
+        await Task.Delay(200);
+
+        // Windows scanning logs
+        AppendTerminalText("[INFO]  Loading Replicore Kernel Driver (replicore.sys)... ", darkBrush);
+        await Task.Delay(300);
+        AppendTerminalText("SUCCESS\n", greenBrush);
+
+        AppendTerminalText("[INFO]  Checking Administrator elevation tokens... ", darkBrush);
+        await Task.Delay(200);
+        AppendTerminalText("ELEVATED\n", blueBrush);
+
+        AppendTerminalText("[INFO]  Connecting to Windows Volume Shadow Copy Service (VSS)... ", darkBrush);
+        await Task.Delay(350);
+        AppendTerminalText("CONNECTED\n", greenBrush);
+
+        AppendTerminalText("[INFO]  Registering VSS writers and checking providers... ", darkBrush);
+        await Task.Delay(250);
+        AppendTerminalText("Done\n", greenBrush);
+
+        AppendTerminalText("[INFO]  Querying WMI (Windows Management Instrumentation) storage namespaces...\n", darkBrush);
+        await Task.Delay(300);
+
+        // Windows-style progress bar using blocks
+        var progressRun = CreateTerminalProgressRun("Scanning Storage Topology: [                    ] 0%", blueBrush);
+        for (int p = 0; p <= 100; p += 5)
+        {
+            int blocks = p / 5; // Max 20 blocks
+            string bar = new string('█', blocks) + new string('░', 20 - blocks);
+            progressRun.Text = $"Scanning Storage Topology: [{bar}] {p}%";
+            await Task.Delay(35);
+        }
+        AppendTerminalText("\n", darkBrush);
+        await Task.Delay(300);
+
+        AppendTerminalText("[INFO]  Resolving physical disk partition maps & mount points...\n", darkBrush);
+        await Task.Delay(200);
+
+        // Run hardware enumeration asynchronously
+        List<DiskInfo> disks = new();
+        try
+        {
+            disks = await Task.Run(() => _diskService.GetPhysicalDisks());
+        }
+        catch (Exception ex)
+        {
+            AppendTerminalText($"[ERROR] WMI Storage Enumeration failed: {ex.Message}\n", new SolidColorBrush(Color.FromRgb(220, 38, 38)));
+            AppendTerminalText("[FATAL] Initialization halted.\n", new SolidColorBrush(Color.FromRgb(220, 38, 38)));
+            StartScanButton.IsEnabled = true;
+            StartButtonCenteringGrid.Visibility = Visibility.Visible;
+            StartButtonCenteringGrid.Opacity = 1.0;
+            ConsoleBorder.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        _allDisks = disks;
+
+        // Print physical disk layouts in Windows style
+        foreach (var disk in _allDisks)
+        {
+            AppendTerminalText($"[  OK  ] Found PhysicalDrive{disk.Index} — {disk.Model}\n", greenBrush);
+            AppendTerminalText($"         Size: {disk.SizeFormatted} | Mounts: {(string.IsNullOrEmpty(disk.DriveLetters) ? "None" : disk.DriveLetters)} | S.M.A.R.T: ", darkBrush);
+            if (disk.IsHealthy)
+            {
+                AppendTerminalText("HEALTHY [OK]\n", greenBrush);
+            }
+            else
+            {
+                AppendTerminalText($"ALERT [{disk.HealthStatus}]\n", yellowBrush);
+            }
+            await Task.Delay(300);
+        }
+
+        AppendTerminalText("\nAll systems operational. Starting Replicore Dashboard GUI...\n", blueBrush);
+        await Task.Delay(800);
+
+        // Bind data and load UI states
+        MasterComboBox.ItemsSource = _allDisks;
+        if (_allDisks.Count > 0)
+        {
+            MasterComboBox.SelectedItem = _allDisks.FirstOrDefault(d => d.IsSystemDisk) ?? _allDisks[0];
+        }
+        UpdateTargetList();
+
+        AppendLog($"Found {_allDisks.Count} disk(s).");
+        UpdateDetailText(MasterComboBox, MasterDetailText, MasterPartitionsControl, MasterNoPartitionsText, MasterHealthPill, MasterHealthText);
+        UpdateDetailText(TargetsListBox, TargetDetailText, TargetPartitionsControl, TargetNoPartitionsText, TargetHealthPill, TargetHealthText);
+
+        // Fade out transition
+        DashboardGrid.Visibility = Visibility.Visible;
+        if (FindResource("TransitionToDashboard") is System.Windows.Media.Animation.Storyboard transition)
+        {
+            transition.Completed += (s, ev) =>
+            {
+                TerminalStartGrid.Visibility = Visibility.Collapsed;
+            };
+            transition.Begin(this);
+        }
+        else
+        {
+            TerminalStartGrid.Visibility = Visibility.Collapsed;
+        }
+    }
 }

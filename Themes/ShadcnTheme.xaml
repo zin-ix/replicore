@@ -273,6 +273,26 @@
         <Setter Property="Padding" Value="12,0"/>
     </Style>
 
+    <!-- ListBoxItem: removes default blue selection chrome, adds quiet hover feedback -->
+    <Style TargetType="ListBoxItem">
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ListBoxItem">
+                    <Border x:Name="ItemBorder" Background="Transparent" CornerRadius="6" Margin="2,1">
+                        <ContentPresenter/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource MutedBrush}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- Two-line row: bold disk name on top, muted meta below -->
     <DataTemplate x:Key="DiskRowTemplate">
         <Grid Margin="0,2">
@@ -296,6 +316,11 @@
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="CornerRadius" Value="8"/>
         <Setter Property="Padding" Value="20"/>
+        <Setter Property="Effect">
+            <Setter.Value>
+                <DropShadowEffect Color="#0F172A" Opacity="0.05" BlurRadius="14" ShadowDepth="2" Direction="270"/>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <!-- ===================== PROGRESS BAR ===================== -->
@@ -437,6 +462,9 @@
                                 BorderBrush="{StaticResource CardBorderBrush}"
                                 BorderThickness="1"
                                 CornerRadius="6">
+                            <Border.Effect>
+                                <DropShadowEffect Color="#0F172A" Opacity="0.05" BlurRadius="14" ShadowDepth="2" Direction="270"/>
+                            </Border.Effect>
                             <ContentPresenter ContentSource="SelectedContent" Margin="20"/>
                         </Border>
                     </Grid>
