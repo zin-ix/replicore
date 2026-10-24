@@ -345,21 +345,152 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
-                                    <ui:SymbolIcon Grid.Column="0" Symbol="HardDrive20" FontSize="20" Margin="0,0,16,0"/>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <ui:SymbolIcon Grid.Column="0" Symbol="Layer20" FontSize="20" Margin="0,0,16,0"/>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,16,0">
+                                        <TextBlock Text="Backup type" Style="{StaticResource BodyText}"/>
+                                        <TextBlock x:Name="ScheduleTypeCaption" Style="{StaticResource CaptionText}" TextWrapping="Wrap"
+                                                   Text="Every volume on the source disk plus the boot files, so Windows can be restored from it."/>
+                                    </StackPanel>
+                                    <ComboBox Grid.Column="2" x:Name="ScheduleTypeComboBox" SelectedIndex="0" Width="180"
+                                              SelectionChanged="ScheduleTypeComboBox_SelectionChanged">
+                                        <ComboBoxItem Content="Full system image"/>
+                                        <ComboBoxItem Content="Selected volumes"/>
+                                        <ComboBoxItem Content="Selected folders"/>
+                                    </ComboBox>
+                                    <!-- Selected folders: the folders to copy -->
+                                    <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" x:Name="ScheduleFoldersPanel"
+                                                Visibility="Collapsed" Margin="0,12,0,0">
+                                        <ListBox x:Name="ScheduleFoldersListBox" MinHeight="40" MaxHeight="180" SelectionMode="Extended"
+                                                 SelectionChanged="ScheduleFoldersListBox_SelectionChanged"/>
+                                        <TextBlock x:Name="ScheduleNoFoldersText" Text="No folders added yet."
+                                                   Style="{StaticResource CaptionText}" Margin="0,4,0,0"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                            <ui:Button x:Name="ScheduleAddFolderButton" Content="Add folders"
+                                                       Icon="{ui:SymbolIcon FolderAdd20}" Click="ScheduleAddFolderButton_Click"/>
+                                            <ui:Button x:Name="ScheduleRemoveFolderButton" Content="Remove" Margin="8,0,0,0" IsEnabled="False"
+                                                       Icon="{ui:SymbolIcon Dismiss20}" Click="ScheduleRemoveFolderButton_Click"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Grid>
+                                <StackPanel x:Name="ScheduleSourceSection">
+                                    <Separator Margin="0"/>
+                                    <Grid Margin="20,14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <ui:SymbolIcon Grid.Column="0" Symbol="HardDrive20" FontSize="20" Margin="0,0,16,0"/>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="Source disk" Style="{StaticResource BodyText}"/>
+                                            <TextBlock Text="The disk whose volumes are backed up." Style="{StaticResource CaptionText}"/>
+                                        </StackPanel>
+                                        <ComboBox Grid.Column="2" x:Name="ScheduleSourceComboBox" Width="300"
+                                                  DisplayMemberPath="DisplayName"
+                                                  SelectionChanged="ScheduleSourceComboBox_SelectionChanged"/>
+                                        <!-- Selected volumes: pick the volumes to include -->
+                                        <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" x:Name="ScheduleCustomPanel"
+                                                    Visibility="Collapsed" Margin="0,12,0,0">
+                                            <WrapPanel x:Name="ScheduleVolumesPanel"/>
+                                            <TextBlock x:Name="ScheduleNoVolumesText" Text="This disk has no volumes with a drive letter."
+                                                       Style="{StaticResource CaptionText}" Visibility="Collapsed"/>
+                                            <CheckBox x:Name="ScheduleBootableCheckBox" Margin="0,8,0,0"
+                                                      Content="Also include the boot files, so Windows can be restored from this backup"/>
+                                        </StackPanel>
+                                    </Grid>
+                                </StackPanel>
+                                <Separator Margin="0"/>
+                                <Grid Margin="20,14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <ui:SymbolIcon Grid.Column="0" Symbol="FolderArrowRight20" FontSize="20" Margin="0,0,16,0"/>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,16,0">
+                                        <TextBlock Text="Backup destination" Style="{StaticResource BodyText}"/>
+                                        <TextBlock x:Name="ScheduleDestinationCaption" Style="{StaticResource CaptionText}" TextWrapping="Wrap"
+                                                   Text="A drive such as E: or a network share such as \\server\backups. Windows saves the image in a WindowsImageBackup folder at the root of a drive."/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <ui:TextBox x:Name="ScheduleDestinationTextBox" PlaceholderText="E: or \\server\share"
+                                                    ClearButtonEnabled="False" Width="200"/>
+                                        <ui:Button x:Name="ScheduleBrowseButton" Content="Browse" Margin="8,0,0,0"
+                                                   Icon="{ui:SymbolIcon FolderOpen20}" Click="ScheduleBrowseButton_Click"/>
+                                    </StackPanel>
+                                </Grid>
+                                <Separator Margin="0"/>
+                                <Grid Margin="20,14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <ui:SymbolIcon Grid.Column="0" Symbol="Save20" FontSize="20" Margin="0,0,16,0"/>
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                        <TextBlock Text="Disks" Style="{StaticResource BodyText}"/>
-                                        <TextBlock Text="Uses the source and target disks selected on the Clone page. Targets need a drive letter."
+                                        <TextBlock Text="Add schedule" Style="{StaticResource BodyText}"/>
+                                        <TextBlock Text="Adds a weekly task to Task Scheduler. Each schedule runs on its own."
                                                    Style="{StaticResource CaptionText}"/>
                                     </StackPanel>
-                                    <ui:Button Grid.Column="2" x:Name="SaveScheduleButton" Content="Register task" Appearance="Primary"
-                                               Icon="{ui:SymbolIcon Save20}" Width="180" Click="SaveScheduleButton_Click"/>
+                                    <ui:Button Grid.Column="2" x:Name="SaveScheduleButton" Content="Add schedule" Appearance="Primary"
+                                               Icon="{ui:SymbolIcon Add20}" Width="180" Click="SaveScheduleButton_Click"/>
                                 </Grid>
                             </StackPanel>
                         </Border>
 
                         <ui:InfoBar IsOpen="True" IsClosable="False" Severity="Informational" Margin="0,16,0,0"
                                     Title="Keep the drives connected"
-                                    Message="The task runs under the SYSTEM account. Both the source and the target drives must be connected at the scheduled time."/>
+                                    Message="Backups run under the SYSTEM account, wake the PC from sleep, and run as soon as possible if the PC was off at the scheduled time. The source and destination must be connected, and a network share must allow write access for this computer's account."/>
+
+                        <!-- Saved schedules -->
+                        <Grid Margin="0,24,0,8">
+                            <TextBlock Text="Scheduled backups" Style="{StaticResource BodyText}" FontWeight="SemiBold" FontSize="16"/>
+                            <ui:Button x:Name="RefreshSchedulesButton" Content="Refresh" HorizontalAlignment="Right"
+                                       Icon="{ui:SymbolIcon ArrowSync20}" Click="RefreshSchedulesButton_Click"/>
+                        </Grid>
+                        <Border Style="{StaticResource Card}" Padding="0">
+                            <StackPanel>
+                                <TextBlock x:Name="SchedulesEmptyText" Margin="20,16" Style="{StaticResource CaptionText}"
+                                           Text="No scheduled backups yet. Add one above."/>
+                                <ItemsControl x:Name="SchedulesItemsControl">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1">
+                                                <Grid Margin="20,14">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <ui:SymbolIcon Grid.Column="0" Symbol="CalendarSync20" FontSize="20" Margin="0,0,16,0"
+                                                                   VerticalAlignment="Top"/>
+                                                    <StackPanel Grid.Column="1" Margin="0,0,16,0">
+                                                        <TextBlock Text="{Binding Title}" Style="{StaticResource BodyText}" TextTrimming="CharacterEllipsis"/>
+                                                        <TextBlock Text="{Binding When}" Style="{StaticResource CaptionText}" TextTrimming="CharacterEllipsis"/>
+                                                        <TextBlock Text="{Binding Status}" Style="{StaticResource CaptionText}" Foreground="{Binding StatusBrush}"
+                                                                   TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                                        <ui:Button Content="Run now" Icon="{ui:SymbolIcon Play20}" Tag="{Binding Schedule}"
+                                                                   Click="RunScheduleNowButton_Click"/>
+                                                        <ui:Button Content="Delete" Icon="{ui:SymbolIcon Delete20}" Margin="8,0,0,0"
+                                                                   Tag="{Binding Schedule}" Click="DeleteOneScheduleButton_Click"/>
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
 
                         <Border Style="{StaticResource Card}" Margin="0,16,0,0" Padding="20,14">
                             <Grid>
@@ -370,10 +501,10 @@
                                 </Grid.ColumnDefinitions>
                                 <ui:SymbolIcon Grid.Column="0" Symbol="Delete20" FontSize="20" Margin="0,0,16,0"/>
                                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                    <TextBlock Text="Remove scheduled backups" Style="{StaticResource BodyText}"/>
-                                    <TextBlock Text="Deletes every Replicore task from Task Scheduler." Style="{StaticResource CaptionText}"/>
+                                    <TextBlock Text="Remove all scheduled backups" Style="{StaticResource BodyText}"/>
+                                    <TextBlock Text="Deletes every Replicore task from Task Scheduler. Backup history is kept." Style="{StaticResource CaptionText}"/>
                                 </StackPanel>
-                                <ui:Button Grid.Column="2" x:Name="DeleteScheduleButton" Content="Remove" Width="180"
+                                <ui:Button Grid.Column="2" x:Name="DeleteScheduleButton" Content="Remove all" Width="180"
                                            Click="DeleteScheduleButton_Click"/>
                             </Grid>
                         </Border>
@@ -385,27 +516,79 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <Grid Grid.Row="0" Margin="0,0,0,20">
                         <StackPanel>
                             <TextBlock Text="Backup history" Style="{StaticResource PageTitleText}"/>
-                            <TextBlock Text="Windows image backups stored on the first selected target disk."
+                            <TextBlock Text="Every backup and clone Replicore ran, including scheduled backups that ran while the app was closed."
                                        Style="{StaticResource CaptionText}" FontSize="13" Margin="0,4,0,0"/>
                         </StackPanel>
-                        <ui:Button x:Name="LoadHistoryButton" Content="Scan target" HorizontalAlignment="Right" VerticalAlignment="Bottom"
-                                   Icon="{ui:SymbolIcon Search20}" Height="36" Click="LoadHistoryButton_Click"/>
+                        <ui:Button x:Name="RefreshHistoryButton" Content="Refresh" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                   Icon="{ui:SymbolIcon ArrowSync20}" Height="36" Click="RefreshHistoryButton_Click"/>
                     </Grid>
                     <Border Grid.Row="1" Style="{StaticResource Card}" Padding="8">
-                        <ui:ListView x:Name="HistoryListView">
-                            <ui:ListView.View>
-                                <ui:GridView>
-                                    <GridViewColumn Header="Date and time" Width="180" DisplayMemberBinding="{Binding Timestamp}"/>
-                                    <GridViewColumn Header="Version ID" Width="180" DisplayMemberBinding="{Binding VersionId}"/>
-                                    <GridViewColumn Header="Source" Width="180" DisplayMemberBinding="{Binding Location}"/>
-                                    <GridViewColumn Header="Recoverable items" Width="280" DisplayMemberBinding="{Binding RecoverableItems}"/>
-                                </ui:GridView>
-                            </ui:ListView.View>
-                        </ui:ListView>
+                        <Grid>
+                            <ui:ListView x:Name="RunsListView">
+                                <ui:ListView.View>
+                                    <ui:GridView>
+                                        <GridViewColumn Header="Started" Width="140" DisplayMemberBinding="{Binding StartedText}"/>
+                                        <GridViewColumn Header="Status" Width="100" DisplayMemberBinding="{Binding StatusText}"/>
+                                        <GridViewColumn Header="Type" Width="140" DisplayMemberBinding="{Binding Kind}"/>
+                                        <GridViewColumn Header="Trigger" Width="100" DisplayMemberBinding="{Binding TriggerLabel}"/>
+                                        <GridViewColumn Header="Source" Width="200" DisplayMemberBinding="{Binding Source}"/>
+                                        <GridViewColumn Header="Destination" Width="160" DisplayMemberBinding="{Binding Destination}"/>
+                                        <GridViewColumn Header="Duration" Width="80" DisplayMemberBinding="{Binding DurationText}"/>
+                                        <GridViewColumn Header="Details" Width="320" DisplayMemberBinding="{Binding Details}"/>
+                                        <GridViewColumn Header="Log" Width="90">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <ui:Button Content="Open" Tag="{Binding LogPath}" Click="OpenRunLogButton_Click"
+                                                               Visibility="{Binding HasLog, Converter={StaticResource BoolToVisibility}}"/>
+                                                </DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                    </ui:GridView>
+                                </ui:ListView.View>
+                            </ui:ListView>
+                            <TextBlock x:Name="RunsEmptyText" Text="No backups recorded yet." Style="{StaticResource CaptionText}"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Windows image versions that wbadmin finds on a drive, including ones made outside Replicore -->
+                    <Border Grid.Row="2" Style="{StaticResource Card}" Margin="0,16,0,0" Padding="20,14">
+                        <StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ui:SymbolIcon Grid.Column="0" Symbol="Search20" FontSize="20" Margin="0,0,16,0"/>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,16,0">
+                                    <TextBlock Text="Image versions on a drive" Style="{StaticResource BodyText}"/>
+                                    <TextBlock Text="Lists the Windows image backups stored on a drive or network share, ready to restore."
+                                               Style="{StaticResource CaptionText}" TextWrapping="Wrap"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <ui:TextBox x:Name="HistoryScanPathTextBox" PlaceholderText="E: or \\server\share"
+                                                ClearButtonEnabled="False" Width="200"/>
+                                    <ui:Button x:Name="LoadHistoryButton" Content="Scan" Margin="8,0,0,0"
+                                               Icon="{ui:SymbolIcon Search20}" Click="LoadHistoryButton_Click"/>
+                                </StackPanel>
+                            </Grid>
+                            <ui:ListView x:Name="HistoryListView" MaxHeight="220" Margin="0,12,0,0" Visibility="Collapsed">
+                                <ui:ListView.View>
+                                    <ui:GridView>
+                                        <GridViewColumn Header="Date and time" Width="180" DisplayMemberBinding="{Binding Timestamp}"/>
+                                        <GridViewColumn Header="Version ID" Width="180" DisplayMemberBinding="{Binding VersionId}"/>
+                                        <GridViewColumn Header="Source" Width="180" DisplayMemberBinding="{Binding Location}"/>
+                                        <GridViewColumn Header="Recoverable items" Width="280" DisplayMemberBinding="{Binding RecoverableItems}"/>
+                                    </ui:GridView>
+                                </ui:ListView.View>
+                            </ui:ListView>
+                        </StackPanel>
                     </Border>
                 </Grid>
 

@@ -15,6 +15,15 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // Started by Task Scheduler: run the backup with no window and report the result as the exit code
+        if (e.Args.Length == 2 && e.Args[0] == "--run-schedule" && long.TryParse(e.Args[1], out long scheduleId))
+        {
+            int exitCode = await Task.Run(() => ScheduledBackupRunner.Run(scheduleId));
+            Shutdown(exitCode);
+            return;
+        }
+
         // Match the Windows light/dark setting before the first window is shown
         ApplicationThemeManager.ApplySystemTheme();
 

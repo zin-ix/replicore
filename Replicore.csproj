@@ -20,6 +20,8 @@
 
 
   <ItemGroup>
+    <!-- Stores backup schedules and the history of every backup run -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
     <!-- Used for WMI disk enumeration (model, size, drive letters) -->
     <PackageReference Include="System.Management" Version="8.0.0" />
     <PackageReference Include="WPF-UI" Version="4.3.0" />

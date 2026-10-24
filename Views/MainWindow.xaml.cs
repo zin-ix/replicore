@@ -152,6 +152,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         SchedulePage.Visibility = page == "Schedule" ? Visibility.Visible : Visibility.Collapsed;
         HistoryPage.Visibility = page == "History" ? Visibility.Visible : Visibility.Collapsed;
         ActivityPage.Visibility = page == "Activity" ? Visibility.Visible : Visibility.Collapsed;
+
+        // Scheduled runs happen outside the app, so both lists are reloaded each time they're shown
+        if (page == "Schedule") _ = LoadSchedulesAsync();
+        if (page == "History") _ = LoadRunsAsync();
     }
 
     private void SelectAllButton_Click(object sender, RoutedEventArgs e)
@@ -294,6 +298,11 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             // Default master to the system disk
             MasterComboBox.SelectedItem = _allDisks.FirstOrDefault(d => d.IsSystemDisk) ?? _allDisks[0];
         }
+
+        // The schedule only backs up disks that have mounted volumes
+        var schedulable = _allDisks.Where(d => !string.IsNullOrWhiteSpace(d.DriveLetters)).ToList();
+        ScheduleSourceComboBox.ItemsSource = schedulable;
+        ScheduleSourceComboBox.SelectedItem = schedulable.FirstOrDefault(d => d.IsSystemDisk) ?? schedulable.FirstOrDefault();
 
         UpdateTargetList();
         UpdateSourceDetails();
@@ -636,10 +645,16 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         var jobs = new List<(DiskInfo Disk, CloneTaskProgress Item, CloneTarget Target)>();
         var images = new List<(DiskInfo Disk, VirtualDisk Vhd)>();
+        // One history row per target; failures that happen before a target's job exists are noted here
+        var runIds = new Dictionary<DiskInfo, long?>();
+        var runErrors = new Dictionary<DiskInfo, string>();
+        bool cancelled = false;
         try
         {
             foreach (var target in targets)
             {
+                runIds[target] = TryStartRun("Clone", master.NameLine, target.IsImageFile ? target.ImagePath : target.NameLine);
+
                 var progressItem = new CloneTaskProgress
                 {
                     TargetDiskName = target.NameLine,
@@ -707,6 +722,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                     progressItem.Status = "Failed";
                     progressItem.StatusColor = "#EF4444"; // red
                     AppendLog($"[{label}] ERROR: Couldn't create the image file. {ex.Message}");
+                    runErrors[target] = $"Couldn't create the image file. {ex.Message}";
                 }
             }
 
@@ -754,10 +770,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 item.StatusColor = "#71717A"; // gray
             }
             AppendLog($"ERROR: Clone not started. {ex.Message}");
+            foreach (var target in targets) runErrors.TryAdd(target, $"Not started. {ex.Message}");
             await ShowMessageAsync("Clone not started", ex.Message);
         }
         catch (OperationCanceledException)
         {
+            cancelled = true;
             foreach (var (disk, item, target) in jobs.Where(j => !j.Target.Succeeded && j.Target.Error == null))
             {
                 item.Status = "Cancelled";
@@ -775,11 +793,24 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 item.StatusColor = "#EF4444"; // red
             }
             AppendLog($"ERROR: {ex.Message}");
+            foreach (var target in targets) runErrors.TryAdd(target, ex.Message);
         }
         finally
         {
             foreach (var (disk, vhd) in images)
                 await Task.Run(() => FinishImage(disk, vhd, jobs.Any(j => j.Disk == disk && j.Target.Succeeded)));
+
+            foreach (var (disk, runId) in runIds)
+            {
+                var job = jobs.FirstOrDefault(j => j.Disk == disk);
+                if (job.Target?.Succeeded == true)
+                    TryFinishRun(runId, RunStatus.Succeeded, job.Target.Verified ? "Cloned and verified." : "Cloned.");
+                else if (cancelled && job.Target?.Error == null)
+                    TryFinishRun(runId, RunStatus.Cancelled, "Cancelled.");
+                else
+                    TryFinishRun(runId, RunStatus.Failed,
+                        job.Target?.Error ?? runErrors.GetValueOrDefault(disk) ?? "Clone failed. See the Activity page.");
+            }
             SetRunningState(false);
         }
     }
@@ -861,6 +892,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 }
             });
 
+            long? runId = TryStartRun("Image backup", $"{sourceVolume} on {master.NameLine}", targetPath);
             try
             {
                 bool success = await _cloneService.BackupAsync(sourceVolume, targetPath, progress, _cts.Token);
@@ -869,12 +901,14 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                     progressItem.Status = "Completed";
                     progressItem.StatusColor = "#10B981"; // green
                     AppendLog($"[Disk {target.Index}] Backup completed successfully.");
+                    TryFinishRun(runId, RunStatus.Succeeded, $"Image of {sourceVolume} saved to {targetPath}.");
                 }
                 else
                 {
                     progressItem.Status = "Failed";
                     progressItem.StatusColor = "#EF4444"; // red
                     AppendLog($"[Disk {target.Index}] Backup finished with errors.");
+                    TryFinishRun(runId, RunStatus.Failed, "wbadmin reported errors. See the Activity page.");
                 }
             }
             catch (OperationCanceledException)
@@ -882,12 +916,14 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 progressItem.Status = "Cancelled";
                 progressItem.StatusColor = "#71717A";
                 AppendLog($"[Disk {target.Index}] Backup cancelled by user.");
+                TryFinishRun(runId, RunStatus.Cancelled, "Cancelled.");
             }
             catch (Exception ex)
             {
                 progressItem.Status = "Error";
                 progressItem.StatusColor = "#EF4444";
                 AppendLog($"[Disk {target.Index}] ERROR: {ex.Message}");
+                TryFinishRun(runId, RunStatus.Failed, ex.Message);
             }
         }).ToList();
 
@@ -936,29 +972,84 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         CancelBackupButton.IsEnabled = false;
     }
 
+    // ---------------- Backup history ----------------
+
+    /// <summary>Opened on first use, so a database problem only affects history and schedules, not cloning.</summary>
+    private HistoryDatabase Db => _db ??= new HistoryDatabase();
+    private HistoryDatabase? _db;
+    private readonly TaskSchedulerService _taskScheduler = new();
+
+    /// <summary>Records a manual run in the history; null if the database can't be written.</summary>
+    private long? TryStartRun(string kind, string source, string destination)
+    {
+        try { return Db.StartRun(null, kind, source, destination); }
+        catch (Exception ex)
+        {
+            AppendLog($"WARNING: Couldn't save this run to backup history: {ex.Message}");
+            return null;
+        }
+    }
+
+    private void TryFinishRun(long? runId, RunStatus status, string details)
+    {
+        if (runId is not long id) return;
+        try { Db.FinishRun(id, status, details); }
+        catch (Exception ex) { AppendLog($"WARNING: Couldn't update backup history: {ex.Message}"); }
+    }
+
+    private async Task LoadRunsAsync()
+    {
+        try
+        {
+            var runs = await Task.Run(() => Db.GetRuns());
+            RunsListView.ItemsSource = runs;
+            RunsEmptyText.Visibility = runs.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        catch (Exception ex)
+        {
+            RunsEmptyText.Text = $"Couldn't read backup history: {ex.Message}";
+            RunsEmptyText.Visibility = Visibility.Visible;
+        }
+    }
+
+    private async void RefreshHistoryButton_Click(object sender, RoutedEventArgs e) => await LoadRunsAsync();
+
+    private void OpenRunLogButton_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not string path || !File.Exists(path)) return;
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+    }
+
     private async void LoadHistoryButton_Click(object sender, RoutedEventArgs e)
     {
-        var target = GetSelectedTargets().FirstOrDefault(t => !string.IsNullOrWhiteSpace(t.DriveLetters));
-        if (target == null)
+        // Default to the first target selected on the Clone page
+        if (string.IsNullOrWhiteSpace(HistoryScanPathTextBox.Text))
         {
-            await ShowMessageAsync("Select a target disk",
-                "On the Clone page, select a target disk that has a mounted drive letter, then scan it for backups here.");
+            var target = GetSelectedTargets().FirstOrDefault(t => !string.IsNullOrWhiteSpace(t.DriveLetters));
+            if (target != null) HistoryScanPathTextBox.Text = target.DriveLetters.Split(',')[0].Trim();
+        }
+
+        string? path = NormalizeBackupDestination(HistoryScanPathTextBox.Text);
+        if (path == null)
+        {
+            await ShowMessageAsync("Enter a drive", "Enter the drive or network share that holds the backups, such as E: or \\\\server\\backups.");
             return;
         }
 
-        string path = target.DriveLetters.Split(',')[0].Trim();
-        AppendLog($"Scanning backup history on {path}...");
-
+        AppendLog($"Scanning image versions on {path}...");
         try
         {
             string versionsText = await _cloneService.GetBackupVersionsAsync(path);
             var versions = _cloneService.ParseBackupVersions(versionsText);
             HistoryListView.ItemsSource = versions;
+            HistoryListView.Visibility = Visibility.Visible;
 
             AppendLog($"Scan completed. Found {versions.Count} backup version(s).");
-            if (versions.Count == 0 && !string.IsNullOrWhiteSpace(versionsText))
+            if (versions.Count == 0)
             {
-                AppendLog(versionsText);
+                await ShowMessageAsync("No image versions found",
+                    $"wbadmin found no Windows image backups on {path}. Folder backups aren't images, so they only appear in the list above.");
+                if (!string.IsNullOrWhiteSpace(versionsText)) AppendLog(versionsText);
             }
         }
         catch (Exception ex)
@@ -967,20 +1058,249 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         }
     }
 
-    private async void SaveScheduleButton_Click(object sender, RoutedEventArgs e)
-    {
-        var selectedTargets = GetSelectedTargets();
-        var validTargets = selectedTargets.Where(t => !string.IsNullOrWhiteSpace(t.DriveLetters)).ToList();
+    // ---------------- Schedules ----------------
 
-        if (MasterComboBox.SelectedItem is not DiskInfo master || string.IsNullOrWhiteSpace(master.DriveLetters) ||
-            validTargets.Count == 0)
+    /// <summary>One row in the Scheduled backups list.</summary>
+    public sealed class ScheduleListItem
+    {
+        public required BackupSchedule Schedule { get; init; }
+        public required string Title { get; init; }
+        public required string When { get; init; }
+        public required string Status { get; init; }
+        public required Brush StatusBrush { get; init; }
+    }
+
+    private ScheduleKind SelectedScheduleKind => (ScheduleKind)Math.Max(0, ScheduleTypeComboBox.SelectedIndex);
+
+    private async Task LoadSchedulesAsync()
+    {
+        try
         {
-            await ShowMessageAsync("Select disks first",
-                "To schedule a backup, select a source and at least one target drive that has a mounted volume (drive letter).");
+            var rows = await Task.Run(() =>
+            {
+                var lastRuns = Db.GetLastRunPerSchedule();
+                return Db.GetSchedules()
+                    .Select(s => (Schedule: s, Task: _taskScheduler.GetStatus(s), LastRun: lastRuns.GetValueOrDefault(s.Id)))
+                    .ToList();
+            });
+
+            SchedulesItemsControl.ItemsSource = rows.Select(r => DescribeSchedule(r.Schedule, r.Task, r.LastRun)).ToList();
+            SchedulesEmptyText.Text = "No scheduled backups yet. Add one above.";
+            SchedulesEmptyText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        catch (Exception ex)
+        {
+            SchedulesItemsControl.ItemsSource = null;
+            SchedulesEmptyText.Text = $"Couldn't load scheduled backups: {ex.Message}";
+            SchedulesEmptyText.Visibility = Visibility.Visible;
+        }
+    }
+
+    private ScheduleListItem DescribeSchedule(BackupSchedule schedule, ScheduledTaskStatus task, BackupRun? lastRun)
+    {
+        var parts = new List<string>();
+        bool problem = false;
+
+        if (!task.Exists)
+        {
+            parts.Add("Missing from Task Scheduler, so it won't run. Delete it and add it again.");
+            problem = true;
+        }
+        else if (task.IsRunning) parts.Add("Running now");
+        else if (task.IsDisabled)
+        {
+            parts.Add("Disabled in Task Scheduler");
+            problem = true;
+        }
+        else if (task.NextRun is DateTime next) parts.Add($"Next run {next:ddd yyyy-MM-dd HH:mm}");
+
+        if (lastRun == null) parts.Add("Hasn't run yet");
+        else
+        {
+            parts.Add($"Last run {lastRun.StartedText}: {lastRun.StatusText}" +
+                      (lastRun.Status == RunStatus.Failed && lastRun.Details.Length > 0 ? $" — {lastRun.Details}" : ""));
+            problem |= lastRun.Status == RunStatus.Failed;
+        }
+
+        return new ScheduleListItem
+        {
+            Schedule = schedule,
+            Title = $"{schedule.KindLabel}: {schedule.SourceSummary}",
+            When = schedule.WhenSummary,
+            Status = string.Join("   •   ", parts),
+            StatusBrush = (Brush)FindResource(problem ? CriticalText : TextTertiary)
+        };
+    }
+
+    private async void RefreshSchedulesButton_Click(object sender, RoutedEventArgs e) => await LoadSchedulesAsync();
+
+    private async void RunScheduleNowButton_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not BackupSchedule schedule) return;
+        try
+        {
+            _taskScheduler.RunNow(schedule);
+            AppendLog($"Started scheduled backup {schedule.Id} ({schedule.KindLabel}) through Task Scheduler.");
+            await ShowMessageAsync("Backup started",
+                "The backup is running in the background under the SYSTEM account, just as it would on schedule. " +
+                "It appears in Backup history when it finishes, even if you close Replicore.");
+            await LoadSchedulesAsync();
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Couldn't start the backup", ex.Message);
+        }
+    }
+
+    private async void DeleteOneScheduleButton_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not BackupSchedule schedule) return;
+        bool confirm = await ConfirmAsync("Delete this schedule?",
+            $"{schedule.KindLabel}: {schedule.SourceSummary}\n{schedule.WhenSummary}\n\nIts past runs stay in Backup history.",
+            "Delete");
+        if (!confirm) return;
+
+        try
+        {
+            _taskScheduler.Delete(schedule);
+            Db.DeleteSchedule(schedule.Id);
+            AppendLog($"Deleted scheduled backup {schedule.Id}.");
+        }
+        catch (Exception ex)
+        {
+            await ShowMessageAsync("Couldn't delete the schedule", ex.Message);
+        }
+        await LoadSchedulesAsync();
+    }
+
+    private void ScheduleSourceComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // One checkbox per mounted volume on the source, for the Selected volumes type
+        ScheduleVolumesPanel.Children.Clear();
+        var volumes = (ScheduleSourceComboBox.SelectedItem as DiskInfo)?.Partitions
+            .Where(p => !string.IsNullOrWhiteSpace(p.DriveLetter)).ToList() ?? new();
+
+        foreach (var volume in volumes)
+        {
+            ScheduleVolumesPanel.Children.Add(new CheckBox
+            {
+                Content = $"{volume.DriveLetter}  {volume.DisplayLabel} ({volume.UsedSpaceFormatted} used)",
+                Tag = volume.DriveLetter,
+                IsChecked = true,
+                Margin = new Thickness(0, 0, 20, 4)
+            });
+        }
+        ScheduleNoVolumesText.Visibility = volumes.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void ScheduleTypeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Fires once during InitializeComponent, before the rows below it exist
+        if (ScheduleDestinationCaption == null) return;
+
+        var kind = SelectedScheduleKind;
+        bool folders = kind == ScheduleKind.Folders;
+        ScheduleCustomPanel.Visibility = kind == ScheduleKind.Volumes ? Visibility.Visible : Visibility.Collapsed;
+        ScheduleFoldersPanel.Visibility = folders ? Visibility.Visible : Visibility.Collapsed;
+        ScheduleSourceSection.Visibility = folders ? Visibility.Collapsed : Visibility.Visible;
+
+        ScheduleTypeCaption.Text = kind switch
+        {
+            ScheduleKind.FullImage => "Every volume on the source disk plus the boot files, so Windows can be restored from it.",
+            ScheduleKind.Volumes => "An image of only the volumes you select.",
+            _ => "Copies the folders you add. Each run copies new and changed files; files deleted from the source stay in the backup."
+        };
+        ScheduleDestinationCaption.Text = folders
+            ? @"A folder on another drive, such as E:\Backups, or a network share. Each folder is copied into back_up_<folder name>, for example E:\Backups\back_up_Documents."
+            : @"A drive such as E: or a network share such as \\server\backups. Windows saves the image in a WindowsImageBackup folder at the root of a drive.";
+        ScheduleDestinationTextBox.PlaceholderText = folders ? @"E:\Backups" : @"E: or \\server\share";
+    }
+
+    private void ScheduleAddFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "Choose folders to back up", Multiselect = true };
+        if (dialog.ShowDialog(this) != true) return;
+
+        foreach (string folder in dialog.FolderNames)
+        {
+            string path = Path.TrimEndingDirectorySeparator(folder);
+            if (Path.GetPathRoot(path) == path) path = folder; // keep "C:\" rather than "C:"
+            if (!ScheduleFoldersListBox.Items.Cast<string>().Any(f => f.Equals(path, StringComparison.OrdinalIgnoreCase)))
+                ScheduleFoldersListBox.Items.Add(path);
+        }
+        UpdateScheduleFolderState();
+    }
+
+    private void ScheduleRemoveFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var item in ScheduleFoldersListBox.SelectedItems.Cast<string>().ToList())
+            ScheduleFoldersListBox.Items.Remove(item);
+        UpdateScheduleFolderState();
+    }
+
+    private void ScheduleFoldersListBox_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateScheduleFolderState();
+
+    private void UpdateScheduleFolderState()
+    {
+        ScheduleNoFoldersText.Visibility = ScheduleFoldersListBox.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        ScheduleRemoveFolderButton.IsEnabled = ScheduleFoldersListBox.SelectedItems.Count > 0;
+    }
+
+    private async void ScheduleBrowseButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "Choose the backup destination" };
+        if (dialog.ShowDialog(this) != true) return;
+
+        string path = dialog.FolderName;
+        if (path.StartsWith(@"\\") || SelectedScheduleKind == ScheduleKind.Folders)
+        {
+            ScheduleDestinationTextBox.Text = path.StartsWith(@"\\") ? path.TrimEnd('\\') : path;
             return;
         }
 
-        string day = (ScheduleDayComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Sunday";
+        // wbadmin only writes images to the root of a local drive, so a subfolder can't be used
+        string root = Path.GetPathRoot(path)!.TrimEnd('\\');
+        ScheduleDestinationTextBox.Text = root;
+        if (!string.Equals(path.TrimEnd('\\'), root, StringComparison.OrdinalIgnoreCase))
+        {
+            await ShowMessageAsync("Drive root used",
+                $"Windows Backup can't save an image into a folder on a local drive, so the backup will be saved to {root}\\WindowsImageBackup.");
+        }
+    }
+
+    /// <summary>Turns "e", "E:" or "E:\" into "E:" and trims a network share; null if it isn't a valid image destination.</summary>
+    private static string? NormalizeBackupDestination(string input)
+    {
+        string value = input.Trim().Trim('"');
+        if (System.Text.RegularExpressions.Regex.IsMatch(value, @"^[A-Za-z]:?\\?$"))
+            return char.ToUpperInvariant(value[0]) + ":";
+        if (System.Text.RegularExpressions.Regex.IsMatch(value, @"^\\\\[^\\/:*?""<>|]+\\[^/:*?""<>|]+$"))
+            return value.TrimEnd('\\');
+        return null;
+    }
+
+    /// <summary>Full path of a folder destination on a drive or network share; null if it isn't one.</summary>
+    private static string? NormalizeFolderDestination(string input)
+    {
+        string value = input.Trim().Trim('"');
+        if (System.Text.RegularExpressions.Regex.IsMatch(value, @"^[A-Za-z]:$")) value += "\\";
+        if (!System.Text.RegularExpressions.Regex.IsMatch(value, @"^([A-Za-z]:\\|\\\\[^\\]+\\[^\\]+)") ||
+            value.IndexOfAny(new[] { '*', '?', '"', '<', '>', '|' }) >= 0)
+            return null;
+        return Path.GetFullPath(value);
+    }
+
+    /// <summary>True when <paramref name="path"/> is <paramref name="folder"/> or somewhere inside it.</summary>
+    private static bool IsSameOrInside(string path, string folder)
+    {
+        string a = Path.TrimEndingDirectorySeparator(path) + "\\";
+        string b = Path.TrimEndingDirectorySeparator(folder) + "\\";
+        return a.StartsWith(b, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async void SaveScheduleButton_Click(object sender, RoutedEventArgs e)
+    {
+        var day = (DayOfWeek)Math.Max(0, ScheduleDayComboBox.SelectedIndex); // Items run Sunday to Saturday, like DayOfWeek
         string time = ScheduleTimeTextBox.Text.Trim();
 
         // Validate 24h format (HH:mm)
@@ -990,118 +1310,150 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             return;
         }
 
-        string sourceDrive = master.DriveLetters.Split(',')[0].Trim();
-        string dayCode = day.Substring(0, 3).ToUpper(); // SUN, MON, etc.
+        var schedule = new BackupSchedule { Kind = SelectedScheduleKind, Day = day, Time = time };
 
-        bool allSuccess = true;
-        List<string> errorMessages = new();
-
-        foreach (var target in validTargets)
+        if (schedule.Kind == ScheduleKind.Folders)
         {
-            string targetDrive = target.DriveLetters.Split(',')[0].Trim();
-            string taskName = $"Replicore_Backup_Disk{target.Index}";
-            string arguments = $"/create /tn \"{taskName}\" /tr \"wbadmin start backup -backupTarget:{targetDrive} -include:{sourceDrive} -allCritical -quiet\" /sc weekly /d {dayCode} /st {time} /f /ru SYSTEM";
-
-            try
+            var folders = ScheduleFoldersListBox.Items.Cast<string>().ToList();
+            if (folders.Count == 0)
             {
-                var psi = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "schtasks.exe",
-                    Arguments = arguments,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardError = true,
-                    RedirectStandardOutput = true
-                };
-                using var proc = System.Diagnostics.Process.Start(psi);
-                proc?.WaitForExit();
-
-                if (proc?.ExitCode == 0)
-                {
-                    AppendLog($"Successfully registered weekly backup task '{taskName}': {day}s at {time} to {targetDrive}");
-                }
-                else
-                {
-                    string err = proc?.StandardError.ReadToEnd() ?? "Unknown error";
-                    AppendLog($"Failed to register task '{taskName}': {err}");
-                    errorMessages.Add($"Target {targetDrive}: {err}");
-                    allSuccess = false;
-                }
+                await ShowMessageAsync("Add folders", "Add at least one folder to back up.");
+                return;
             }
-            catch (Exception ex)
+
+            var missing = folders.Where(f => !Directory.Exists(f)).ToList();
+            if (missing.Count > 0)
             {
-                AppendLog($"ERROR scheduling task '{taskName}': {ex.Message}");
-                errorMessages.Add($"Target {targetDrive}: {ex.Message}");
-                allSuccess = false;
+                await ShowMessageAsync("Folder not found", $"These folders don't exist:\n{string.Join("\n", missing)}");
+                return;
             }
-        }
 
-        if (allSuccess)
-        {
-            await ShowMessageAsync("Backup scheduled", $"Weekly backup scheduled for {validTargets.Count} drive(s): {day}s at {time}.");
+            string? destination = NormalizeFolderDestination(ScheduleDestinationTextBox.Text);
+            if (destination == null)
+            {
+                await ShowMessageAsync("Invalid destination",
+                    "Enter a folder such as E:\\Backups or a network share such as \\\\server\\backups.");
+                return;
+            }
+            if (!destination.StartsWith(@"\\") && !Directory.Exists(Path.GetPathRoot(destination)))
+            {
+                await ShowMessageAsync("Destination not found",
+                    $"Drive {Path.GetPathRoot(destination)} isn't connected. Connect it and try again.");
+                return;
+            }
+
+            // A destination inside a source folder would copy the backup into itself on every run
+            string? overlap = folders.FirstOrDefault(f => IsSameOrInside(destination, f));
+            if (overlap != null)
+            {
+                await ShowMessageAsync("Destination is inside a source folder",
+                    $"{destination} is inside {overlap}, which is being backed up. Choose a destination outside it.");
+                return;
+            }
+
+            schedule.Folders = folders;
+            schedule.Destination = destination;
         }
         else
         {
-            string errors = string.Join("\n", errorMessages);
-            await ShowMessageAsync("Some tasks weren't registered", $"Some scheduled backup tasks failed to register:\n{errors}");
+            if (ScheduleSourceComboBox.SelectedItem is not DiskInfo source)
+            {
+                await ShowMessageAsync("Choose a source disk", "Choose the disk to back up. Only disks with a drive letter can be scheduled.");
+                return;
+            }
+
+            bool custom = schedule.Kind == ScheduleKind.Volumes;
+            var volumes = custom
+                ? ScheduleVolumesPanel.Children.OfType<CheckBox>().Where(c => c.IsChecked == true).Select(c => (string)c.Tag).ToList()
+                : source.Partitions.Select(p => p.DriveLetter).Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
+
+            if (volumes.Count == 0)
+            {
+                await ShowMessageAsync("Select volumes", "Select at least one volume to back up.");
+                return;
+            }
+
+            string? destination = NormalizeBackupDestination(ScheduleDestinationTextBox.Text);
+            if (destination == null)
+            {
+                await ShowMessageAsync("Invalid destination",
+                    "Enter a drive such as E: or a network share such as \\\\server\\backups. Windows Backup can't save an image into a folder on a local drive.");
+                return;
+            }
+
+            if (!destination.StartsWith(@"\\"))
+            {
+                if (!Directory.Exists(destination + "\\"))
+                {
+                    await ShowMessageAsync("Destination not found", $"Drive {destination} isn't connected. Connect it and try again.");
+                    return;
+                }
+                if (volumes.Any(v => v.Equals(destination, StringComparison.OrdinalIgnoreCase)))
+                {
+                    await ShowMessageAsync("Destination is being backed up",
+                        $"{destination} is one of the volumes being backed up. Choose a destination on another disk.");
+                    return;
+                }
+            }
+
+            schedule.SourceLabel = source.NameLine;
+            schedule.Volumes = volumes;
+            schedule.Bootable = !custom || ScheduleBootableCheckBox.IsChecked == true;
+            schedule.Destination = destination;
+        }
+
+        try
+        {
+            Db.AddSchedule(schedule);
+            try
+            {
+                _taskScheduler.Register(schedule);
+            }
+            catch
+            {
+                // Don't keep a schedule that Task Scheduler will never run
+                Db.DeleteSchedule(schedule.Id);
+                throw;
+            }
+
+            // Tasks from earlier versions of Replicore would otherwise run alongside the new ones
+            _taskScheduler.DeleteLegacyTasks();
+
+            AppendLog($"Added scheduled backup {schedule.Id}: {schedule.KindLabel}, {schedule.SourceSummary}. {schedule.WhenSummary}.");
+            await LoadSchedulesAsync();
+            await ShowMessageAsync("Backup scheduled", $"{schedule.KindLabel}: {schedule.SourceSummary}\n{schedule.WhenSummary}.");
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"ERROR adding scheduled backup: {ex.Message}");
+            await ShowMessageAsync("Schedule wasn't added", $"Error: {ex.Message}");
         }
     }
 
     private async void DeleteScheduleButton_Click(object sender, RoutedEventArgs e)
     {
+        bool confirm = await ConfirmAsync("Remove all scheduled backups?",
+            "Every Replicore task is removed from Task Scheduler. Backup history is kept.", "Remove all");
+        if (!confirm) return;
+
         try
         {
-            // Try to delete the old task format if it exists
-            RunDeleteTask("Replicore_Backup");
-
-            // Also delete potential disk-specific tasks
-            for (int i = 0; i <= 24; i++)
+            foreach (var schedule in Db.GetSchedules())
             {
-                RunDeleteTask($"Replicore_Backup_Disk{i}", silent: true);
+                _taskScheduler.Delete(schedule);
+                Db.DeleteSchedule(schedule.Id);
             }
+            _taskScheduler.DeleteLegacyTasks();
 
-            AppendLog("Deleted scheduled backup task(s).");
-            await ShowMessageAsync("Scheduled tasks removed", "Scheduled backup task(s) were removed.");
+            AppendLog("Removed all scheduled backups.");
+            await ShowMessageAsync("Scheduled backups removed", "All scheduled backups were removed.");
         }
         catch (Exception ex)
         {
-            AppendLog($"ERROR deleting task(s): {ex.Message}");
-            await ShowMessageAsync("Couldn't remove tasks", $"Error: {ex.Message}");
+            AppendLog($"ERROR removing scheduled backups: {ex.Message}");
+            await ShowMessageAsync("Couldn't remove scheduled backups", $"Error: {ex.Message}");
         }
-    }
-
-    private void RunDeleteTask(string taskName, bool silent = false)
-    {
-        try
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "schtasks.exe",
-                Arguments = $"/delete /tn \"{taskName}\" /f",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardError = true,
-                RedirectStandardOutput = true
-            };
-            using var proc = System.Diagnostics.Process.Start(psi);
-            proc?.WaitForExit();
-            
-            if (proc?.ExitCode != 0 && !silent)
-            {
-                string err = proc?.StandardError.ReadToEnd() ?? "";
-                if (!err.Contains("ERROR: The system cannot find the file specified."))
-                {
-                    AppendLog($"Failed to delete task '{taskName}': {err}");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            if (!silent)
-            {
-                AppendLog($"ERROR deleting task '{taskName}': {ex.Message}");
-            }
-        }
+        await LoadSchedulesAsync();
     }
 
     [System.Runtime.InteropServices.DllImport("Powrprof.dll", CharSet = System.Runtime.InteropServices.CharSet.Auto, ExactSpelling = true)]
