@@ -1,7 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
 using System.Windows.Documents;
 using Replicore.Models;
 using Replicore.Services;
@@ -20,38 +19,34 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private const string TextTertiary = "TextFillColorTertiaryBrush";
     private const string AccentText = "AccentTextFillColorPrimaryBrush";
     private const string SuccessText = "SystemFillColorSuccessBrush";
-    private const string CautionText = "SystemFillColorCautionBrush";
     private const string CriticalText = "SystemFillColorCriticalBrush";
+    private const string SuccessBackground = "SystemFillColorSuccessBackgroundBrush";
+    private const string CriticalBackground = "SystemFillColorCriticalBackgroundBrush";
 
     private readonly DiskEnumerationService _diskService = new();
     private readonly CloneService _cloneService = new();
     private CancellationTokenSource? _cts;
+    private bool _isRunning;
     private int _logCount = 0;
     private readonly System.Collections.ObjectModel.ObservableCollection<CloneTaskProgress> _activeProgresses = new();
     private List<DiskInfo> _allDisks = new();
 
-    public MainWindow()
+    /// <param name="initialScan">Disk scan already started by the splash screen; null to scan on open.</param>
+    public MainWindow(Task<List<DiskInfo>>? initialScan = null)
     {
         InitializeComponent();
         // Keep Mica and light/dark theme in sync with Windows settings
         SystemThemeWatcher.Watch(this);
-        // Disks will be loaded asynchronously during the terminal-style boot-up sequence
-        ActiveProgressesControl.ItemsSource = _activeProgresses;
-
-        this.Loaded += (s, e) =>
-        {
-            if (FindResource("BlinkCursor") is System.Windows.Media.Animation.Storyboard blinkStoryboard)
-            {
-                blinkStoryboard.Begin(this);
-            }
-        };
 
         MasterComboBox.SelectionChanged += (_, _) =>
         {
             UpdateTargetList();
-            UpdateDetailText(MasterComboBox, MasterDetailText, MasterPartitionsControl, MasterNoPartitionsText, MasterHealthPill, MasterHealthText);
+            UpdateSourceDetails();
+            UpdateJobSummary();
         };
-        TargetsListBox.SelectionChanged += (_, _) => UpdateDetailText(TargetsListBox, TargetDetailText, TargetPartitionsControl, TargetNoPartitionsText, TargetHealthPill, TargetHealthText);
+
+        // Show the splash screen's scan result, or scan now if there isn't one
+        Loaded += async (_, _) => await ScanDisksAsync(initialScan);
     }
 
     private void UpdateTargetList()
@@ -60,16 +55,84 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         {
             // Ensure the selected master is not checked as a target
             selectedMaster.IsSelected = false;
-            
+
             var targets = _allDisks.Where(d => d.Index != selectedMaster.Index).ToList();
-            TargetsListBox.ItemsSource = targets;
+            TargetsItemsControl.ItemsSource = targets;
             TargetsEmptyState.Visibility = targets.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         }
         else
         {
-            TargetsListBox.ItemsSource = _allDisks;
+            TargetsItemsControl.ItemsSource = _allDisks;
             TargetsEmptyState.Visibility = _allDisks.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         }
+    }
+
+    private List<DiskInfo> GetSelectedTargets() =>
+        TargetsItemsControl.Items.Cast<DiskInfo>().Where(d => d.IsSelected).ToList();
+
+    private void Disk_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(DiskInfo.IsSelected)) UpdateJobSummary();
+    }
+
+    /// <summary>Refreshes the "N of M selected" label and the command bar summary.</summary>
+    private void UpdateJobSummary()
+    {
+        var targets = GetSelectedTargets();
+        int total = TargetsItemsControl.Items.Count;
+        TargetCountText.Text = total == 0 ? "" : $"{targets.Count} of {total} selected";
+
+        if (_isRunning) return;
+
+        SelectAllButton.IsEnabled = total > 0;
+        ClearSelectionButton.IsEnabled = targets.Count > 0;
+
+        bool isMirror = DirectMirrorRadio.IsChecked == true;
+        if (MasterComboBox.SelectedItem is not DiskInfo master)
+        {
+            JobSummaryTitle.Text = "Select a source disk";
+            JobSummaryDetail.Text = "";
+        }
+        else if (targets.Count == 0)
+        {
+            JobSummaryTitle.Text = "Select one or more target disks";
+            JobSummaryDetail.Text = isMirror
+                ? "Each target becomes an exact, bootable copy of the source."
+                : "A Windows system image of the source is saved on each target.";
+        }
+        else
+        {
+            string verb = isMirror ? "Clone" : "Back up";
+            JobSummaryTitle.Text = $"{verb} Disk {master.Index} to {targets.Count} disk{(targets.Count == 1 ? "" : "s")}";
+            JobSummaryDetail.Text = string.Join("   •   ", targets.Select(t => $"Disk {t.Index}  {t.Model} ({t.SizeFormatted})"));
+        }
+
+        StartBackupButton.IsEnabled = MasterComboBox.SelectedItem is DiskInfo && targets.Count > 0;
+    }
+
+    private void NavList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Fires once during InitializeComponent, before the pages exist
+        if (ClonePage == null) return;
+        ShowPage((NavList.SelectedItem as ListBoxItem)?.Tag as string ?? "Clone");
+    }
+
+    private void ShowPage(string page)
+    {
+        ClonePage.Visibility = page == "Clone" ? Visibility.Visible : Visibility.Collapsed;
+        SchedulePage.Visibility = page == "Schedule" ? Visibility.Visible : Visibility.Collapsed;
+        HistoryPage.Visibility = page == "History" ? Visibility.Visible : Visibility.Collapsed;
+        ActivityPage.Visibility = page == "Activity" ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void SelectAllButton_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var disk in TargetsItemsControl.Items.Cast<DiskInfo>()) disk.IsSelected = true;
+    }
+
+    private void ClearSelectionButton_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var disk in TargetsItemsControl.Items.Cast<DiskInfo>()) disk.IsSelected = false;
     }
 
     private async Task ShowMessageAsync(string title, string message)
@@ -102,99 +165,103 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         return await dialog.ShowAsync() == ContentDialogResult.Primary;
     }
 
-    private async Task LoadDisksAsync()
+    /// <summary>
+    /// Enumerates physical disks while showing the scanning overlay. Used on startup,
+    /// by the Rescan button and by "Try again" after a failed scan.
+    /// </summary>
+    /// <param name="pendingScan">A scan that is already running (from the splash screen) to use instead of starting one.</param>
+    private async Task ScanDisksAsync(Task<List<DiskInfo>>? pendingScan = null)
     {
+        ShowPage("");
+        NavList.IsEnabled = false;
+        ScanOverlay.Visibility = Visibility.Visible;
+        ScanningPanel.Visibility = Visibility.Visible;
+        ScanErrorPanel.Visibility = Visibility.Collapsed;
+
+        List<DiskInfo> disks;
         try
         {
-            var disks = _diskService.GetPhysicalDisks();
-            _allDisks = disks;
-
-            MasterComboBox.ItemsSource = _allDisks;
-
-            if (_allDisks.Count > 0)
-            {
-                // Default master to the system disk
-                MasterComboBox.SelectedItem = _allDisks.FirstOrDefault(d => d.IsSystemDisk) ?? _allDisks[0];
-            }
-
-            UpdateTargetList();
-
-            AppendLog($"Found {_allDisks.Count} disk(s).");
-            UpdateDetailText(MasterComboBox, MasterDetailText, MasterPartitionsControl, MasterNoPartitionsText, MasterHealthPill, MasterHealthText);
-            UpdateDetailText(TargetsListBox, TargetDetailText, TargetPartitionsControl, TargetNoPartitionsText, TargetHealthPill, TargetHealthText);
-        }
-        catch (System.Management.ManagementException ex)
-        {
-            AppendLog($"ERROR scanning disks: {ex.Message}");
-            await ShowMessageAsync("Access denied",
-                "Replicore couldn't query the physical drives.\n\n" +
-                "Administrator privileges are required to read physical drives, partition layouts and S.M.A.R.T. health data.\n\n" +
-                "Run this terminal (or the built executable) as Administrator.");
+            disks = await (pendingScan ?? Task.Run(() => _diskService.GetPhysicalDisks()));
         }
         catch (Exception ex)
         {
             AppendLog($"ERROR scanning disks: {ex.Message}");
-            await ShowMessageAsync("Couldn't scan disks", $"An unexpected error occurred while scanning disks:\n{ex.Message}");
+            ScanErrorBar.Message = ex is System.Management.ManagementException
+                ? "Administrator privileges are required to read physical drives, partition layouts and S.M.A.R.T. health data. Run Replicore as Administrator."
+                : ex.Message;
+            ScanningPanel.Visibility = Visibility.Collapsed;
+            ScanErrorPanel.Visibility = Visibility.Visible;
+            return;
         }
+
+        foreach (var old in _allDisks) old.PropertyChanged -= Disk_PropertyChanged;
+        _allDisks = disks;
+        foreach (var disk in _allDisks) disk.PropertyChanged += Disk_PropertyChanged;
+
+        MasterComboBox.ItemsSource = _allDisks;
+        if (_allDisks.Count > 0)
+        {
+            // Default master to the system disk
+            MasterComboBox.SelectedItem = _allDisks.FirstOrDefault(d => d.IsSystemDisk) ?? _allDisks[0];
+        }
+
+        UpdateTargetList();
+        UpdateSourceDetails();
+        UpdateJobSummary();
+        AppendLog($"Found {_allDisks.Count} disk(s).");
+
+        ScanOverlay.Visibility = Visibility.Collapsed;
+        NavList.IsEnabled = true;
+        ShowPage((NavList.SelectedItem as ListBoxItem)?.Tag as string ?? "Clone");
     }
 
-    private void UpdateDetailText(System.Windows.Controls.Primitives.Selector selector, TextBlock detailText, ItemsControl partitionsControl, TextBlock noPartitionsText, Border healthPill, TextBlock healthText)
+    private void UpdateSourceDetails()
     {
-        if (selector.SelectedItem is DiskInfo disk)
+        if (MasterComboBox.SelectedItem is DiskInfo disk)
         {
-            string typeLabel = disk.IsSystemDisk ? "System Disk" : "Basic Disk";
-            detailText.Text = $"{disk.InterfaceType} interface   •   {typeLabel}   •   {disk.SizeFormatted}";
+            MasterModelText.Text = disk.Model;
+            MasterDetailText.Text = $"Disk {disk.Index}   •   {disk.SizeFormatted}   •   {disk.ConnectionLabel}" +
+                                    (disk.IsSystemDisk ? "   •   Windows disk" : "");
 
-            if (disk.Partitions.Count > 0)
-            {
-                partitionsControl.ItemsSource = disk.Partitions;
-                partitionsControl.Visibility = Visibility.Visible;
-                noPartitionsText.Visibility = Visibility.Collapsed;
-            }
-            else
-            {
-                partitionsControl.ItemsSource = null;
-                partitionsControl.Visibility = Visibility.Collapsed;
-                noPartitionsText.Visibility = Visibility.Visible;
-            }
+            MasterPartitionsControl.ItemsSource = disk.Partitions;
+            MasterNoPartitionsText.Visibility = disk.Partitions.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
             // Health status pill
-            healthPill.Visibility = Visibility.Visible;
-            healthText.Text = disk.IsHealthy ? "Healthy" : $"Alert: {disk.HealthStatus}";
-            healthText.SetResourceReference(TextBlock.ForegroundProperty, disk.IsHealthy ? SuccessText : CriticalText);
+            MasterHealthPill.Visibility = Visibility.Visible;
+            MasterHealthText.Text = disk.IsHealthy ? "Healthy" : $"Health alert: {disk.HealthStatus}";
+            MasterHealthText.SetResourceReference(TextBlock.ForegroundProperty, disk.IsHealthy ? SuccessText : CriticalText);
+            MasterHealthPill.SetResourceReference(Border.BackgroundProperty, disk.IsHealthy ? SuccessBackground : CriticalBackground);
         }
         else
         {
-            detailText.Text = "No disk selected";
-            partitionsControl.ItemsSource = null;
-            partitionsControl.Visibility = Visibility.Collapsed;
-            noPartitionsText.Visibility = Visibility.Collapsed;
-            healthPill.Visibility = Visibility.Collapsed;
+            MasterModelText.Text = "No disk selected";
+            MasterDetailText.Text = "";
+            MasterPartitionsControl.ItemsSource = null;
+            MasterNoPartitionsText.Visibility = Visibility.Collapsed;
+            MasterHealthPill.Visibility = Visibility.Collapsed;
         }
     }
 
     private async void RefreshButton_Click(object sender, RoutedEventArgs e)
     {
-        await LoadDisksAsync();
+        await ScanDisksAsync();
+    }
+
+    private async void RetryScanButton_Click(object sender, RoutedEventArgs e)
+    {
+        await ScanDisksAsync();
     }
 
     private void ModeRadio_Checked(object sender, RoutedEventArgs e)
     {
-        if (DirectCloneWarningBanner == null || ProgressTitleText == null || StartBackupButton == null) return;
+        // Fires during InitializeComponent for the default-checked radio, before other controls exist
+        if (DirectCloneWarningBanner == null || StartBackupButton == null || JobSummaryTitle == null) return;
 
         bool isMirror = DirectMirrorRadio.IsChecked == true;
         DirectCloneWarningBanner.IsOpen = isMirror;
-
-        if (isMirror)
-        {
-            ProgressTitleText.Text = "Cloning progress";
-            StartBackupButton.Content = "Start clone";
-        }
-        else
-        {
-            ProgressTitleText.Text = "Backup progress";
-            StartBackupButton.Content = "Start backup";
-        }
+        VerifyCheckBox.Visibility = isMirror ? Visibility.Visible : Visibility.Collapsed;
+        StartBackupButton.Content = isMirror ? "Start clone" : "Start backup";
+        UpdateJobSummary();
     }
 
     private async void StartBackupButton_Click(object sender, RoutedEventArgs e)
@@ -205,10 +272,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             return;
         }
 
-        var selectedTargets = TargetsListBox.Items.Cast<DiskInfo>().Where(d => d.IsSelected).ToList();
+        var selectedTargets = GetSelectedTargets();
         if (selectedTargets.Count == 0)
         {
-            await ShowMessageAsync("No target disk", "Select at least one target disk using the checkboxes.");
+            await ShowMessageAsync("No target disk", "Select at least one target disk.");
             return;
         }
 
@@ -255,7 +322,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 {
                     await ShowMessageAsync("Target disk is too small",
                         $"The target disk '{target.NameLine}' ({target.SizeFormatted}) is smaller than the source disk ({master.SizeFormatted}).\n\n" +
-                        "Direct disk mirroring requires every target disk to be the same size as the source disk or larger.");
+                        "Disk cloning requires every target disk to be the same size as the source disk or larger.");
                     return;
                 }
             }
@@ -264,10 +331,13 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             string targetsListStr = string.Join("\n", selectedTargets.Select(t => $"   • {t.NameLine} ({t.SizeFormatted})"));
 
             bool confirmWipe = await ConfirmAsync("Erase target disks?",
-                $"Direct disk mirroring will completely OVERWRITE and WIPE all data, file systems and partitions on the following target disk(s):\n\n" +
+                $"Disk cloning will completely OVERWRITE and WIPE all data, file systems and partitions on the following target disk(s):\n\n" +
                 $"{targetsListStr}\n\n" +
                 $"All existing files on these drives will be permanently lost.\n\n" +
                 $"Once finished, these target drives will be exact, bootable duplicates of the source.\n\n" +
+                (master.IsSystemDisk
+                    ? "Windows is running from the source disk. Replicore will take a Volume Shadow Copy snapshot so the copy is consistent.\n\n"
+                    : "") +
                 $"Are you sure you want to overwrite these drives?",
                 "Erase and continue", destructive: true);
 
@@ -302,101 +372,123 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         SetRunningState(true);
         ClearLog();
-        AppendLog($"Starting parallel direct sector-by-sector mirror clone of {master.NameLine} to {targets.Count} target(s)...");
+        bool verify = VerifyCheckBox.IsChecked == true;
+        AppendLog($"Starting clone of {master.NameLine} to {targets.Count} target(s){(verify ? " with verification" : "")}...");
 
         _cts = new CancellationTokenSource();
         _activeProgresses.Clear();
+        foreach (var disk in _allDisks) disk.Progress = null;
 
-        var tasks = targets.Select(async target =>
+        var jobs = new List<(DiskInfo Disk, CloneTaskProgress Item, CloneTarget Target)>();
+        foreach (var target in targets)
         {
             var progressItem = new CloneTaskProgress
             {
                 TargetDiskName = target.NameLine,
                 Percent = 0,
-                Status = "Cleaning...",
+                Status = "Preparing...",
                 StatusColor = "#3B82F6" // blue
             };
+            _activeProgresses.Add(progressItem);
+            target.Progress = progressItem;
 
-            Dispatcher.Invoke(() => _activeProgresses.Add(progressItem));
-
+            int diskIndex = target.Index;
             var progress = new Progress<CloneProgressEventArgs>(e =>
             {
-                if (e.PercentComplete.HasValue)
+                switch (e.Phase)
                 {
-                    progressItem.Percent = e.PercentComplete.Value;
-                    progressItem.Status = $"Cloning ({e.PercentComplete.Value}%)";
-                }
-                if (e.SpeedMB.HasValue)
-                {
-                    progressItem.Speed = $"{e.SpeedMB.Value:F1} MB/s";
-                }
-                if (e.EtaSeconds.HasValue)
-                {
-                    progressItem.Eta = FormatEta(e.EtaSeconds.Value);
+                    case "Erasing":
+                        progressItem.Status = "Erasing...";
+                        break;
+                    case "Cloning":
+                    case "Verifying":
+                        if (e.PercentComplete.HasValue)
+                        {
+                            progressItem.Percent = e.PercentComplete.Value;
+                            progressItem.Status = $"{e.Phase} ({e.PercentComplete.Value}%)";
+                        }
+                        if (e.SpeedMB.HasValue) progressItem.Speed = $"{e.SpeedMB.Value:F1} MB/s";
+                        if (e.EtaSeconds.HasValue) progressItem.Eta = FormatEta(e.EtaSeconds.Value);
+                        break;
+                    case "Finalizing":
+                        progressItem.Status = "Finalizing...";
+                        break;
+                    case "Failed":
+                        progressItem.Status = "Failed";
+                        progressItem.StatusColor = "#EF4444"; // red
+                        break;
                 }
                 if (!string.IsNullOrWhiteSpace(e.Message))
                 {
-                    if (e.Message.StartsWith("Copied "))
-                    {
-                        // Throttled details
-                    }
-                    else
-                    {
-                        AppendLog($"[Disk {target.Index}] {e.Message}");
-                    }
+                    AppendLog($"[Disk {diskIndex}] {e.Message}");
                 }
             });
 
-            try
-            {
-                bool success = await _cloneService.DirectSectorCloneAsync(master.DeviceId, target.DeviceId, target.Index, master.SizeBytes, progress, _cts.Token);
-                if (success)
-                {
-                    progressItem.Status = "Completed";
-                    progressItem.StatusColor = "#10B981"; // green
-                    AppendLog($"[Disk {target.Index}] Direct Mirror Clone completed successfully!");
-                }
-                else
-                {
-                    progressItem.Status = "Failed";
-                    progressItem.StatusColor = "#EF4444"; // red
-                    AppendLog($"[Disk {target.Index}] Direct Mirror Clone finished with errors.");
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                progressItem.Status = "Cancelled";
-                progressItem.StatusColor = "#71717A"; // gray
-                AppendLog($"[Disk {target.Index}] Direct Mirror Clone cancelled by user.");
-            }
-            catch (Exception ex)
-            {
-                progressItem.Status = "Error";
-                progressItem.StatusColor = "#EF4444"; // red
-                AppendLog($"[Disk {target.Index}] ERROR: {ex.Message}");
-            }
-        }).ToList();
+            jobs.Add((target, progressItem, new CloneTarget(target.Index, target.DeviceId, progress)));
+        }
 
         try
         {
-            await Task.WhenAll(tasks);
+            var engine = new DiskCloneEngine(_cloneService);
+            var sourceLetters = master.Partitions.Select(p => p.DriveLetter).Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
+            await engine.CloneAsync(master.Index, master.DeviceId, sourceLetters, jobs.Select(j => j.Target).ToList(),
+                verify, new Progress<string>(AppendLog), _cts.Token);
 
-            bool anyFailed = _activeProgresses.Any(p => p.Status == "Failed" || p.Status == "Error");
-            bool allCompleted = _activeProgresses.All(p => p.Status == "Completed");
-
-            if (allCompleted)
+            foreach (var (disk, item, target) in jobs)
             {
-                AppendLog("All parallel cloning operations completed successfully!");
+                if (target.Succeeded)
+                {
+                    item.Percent = 100;
+                    item.Status = target.Verified ? "Verified" : "Completed";
+                    item.StatusColor = "#10B981"; // green
+                    item.Eta = "done";
+                    AppendLog($"[Disk {disk.Index}] Clone {(target.Verified ? "completed and verified" : "completed")} successfully.");
+                }
+                else
+                {
+                    item.Status = "Failed";
+                    item.StatusColor = "#EF4444"; // red
+                }
+            }
+
+            if (jobs.All(j => j.Target.Succeeded))
+            {
+                AppendLog("All clones completed successfully!");
                 ExecutePostBackupAction();
             }
-            else if (anyFailed)
+            else
             {
-                AppendLog("One or more cloning operations finished with errors.");
+                AppendLog("One or more clones failed. See the messages above for each disk.");
+            }
+        }
+        catch (CloneBlockedException ex)
+        {
+            // Raised before any target was touched
+            foreach (var (_, item, _) in jobs)
+            {
+                item.Status = "Not started";
+                item.StatusColor = "#71717A"; // gray
+            }
+            AppendLog($"ERROR: Clone not started. {ex.Message}");
+            await ShowMessageAsync("Clone not started", ex.Message);
+        }
+        catch (OperationCanceledException)
+        {
+            foreach (var (disk, item, target) in jobs.Where(j => !j.Target.Succeeded && j.Target.Error == null))
+            {
+                item.Status = "Cancelled";
+                item.StatusColor = "#71717A"; // gray
+                AppendLog($"[Disk {disk.Index}] Clone cancelled. The disk was left without a partition table.");
             }
         }
         catch (Exception ex)
         {
-            AppendLog($"ERROR running parallel tasks: {ex.Message}");
+            foreach (var (_, item, target) in jobs.Where(j => !j.Target.Succeeded))
+            {
+                item.Status = "Error";
+                item.StatusColor = "#EF4444"; // red
+            }
+            AppendLog($"ERROR: {ex.Message}");
         }
         finally
         {
@@ -412,6 +504,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         _cts = new CancellationTokenSource();
         _activeProgresses.Clear();
+        foreach (var disk in _allDisks) disk.Progress = null;
 
         string sourceVolume = !string.IsNullOrWhiteSpace(master.DriveLetters)
             ? master.DriveLetters.Split(',')[0].Trim()
@@ -432,6 +525,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             };
 
             Dispatcher.Invoke(() => _activeProgresses.Add(progressItem));
+            target.Progress = progressItem;
 
             if (string.IsNullOrWhiteSpace(targetPath))
             {
@@ -531,10 +625,11 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     private async void LoadHistoryButton_Click(object sender, RoutedEventArgs e)
     {
-        if (TargetsListBox.SelectedItem is not DiskInfo target ||
-            string.IsNullOrWhiteSpace(target.DriveLetters))
+        var target = GetSelectedTargets().FirstOrDefault(t => !string.IsNullOrWhiteSpace(t.DriveLetters));
+        if (target == null)
         {
-            await ShowMessageAsync("Select a target disk", "Select a target disk in the list to view its backup history. It must have a mounted drive letter.");
+            await ShowMessageAsync("Select a target disk",
+                "On the Clone page, select a target disk that has a mounted drive letter, then scan it for backups here.");
             return;
         }
 
@@ -561,7 +656,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     private async void SaveScheduleButton_Click(object sender, RoutedEventArgs e)
     {
-        var selectedTargets = TargetsListBox.Items.Cast<DiskInfo>().Where(d => d.IsSelected).ToList();
+        var selectedTargets = GetSelectedTargets();
         var validTargets = selectedTargets.Where(t => !string.IsNullOrWhiteSpace(t.DriveLetters)).ToList();
 
         if (MasterComboBox.SelectedItem is not DiskInfo master || string.IsNullOrWhiteSpace(master.DriveLetters) ||
@@ -730,13 +825,34 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         CancelBackupButton.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
         CancelBackupButton.IsEnabled = running;
 
-        ProgressCard.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
+        _isRunning = running;
 
         RefreshButton.IsEnabled = !running;
         MasterComboBox.IsEnabled = !running;
-        TargetsListBox.IsEnabled = !running;
+        ImageBackupRadio.IsEnabled = !running;
+        DirectMirrorRadio.IsEnabled = !running;
+        SelectAllButton.IsEnabled = !running;
+        ClearSelectionButton.IsEnabled = !running;
         PostBackupActionComboBox.IsEnabled = !running;
-        MainTabControl.IsEnabled = !running;
+        VerifyCheckBox.IsEnabled = !running;
+        SaveScheduleButton.IsEnabled = !running;
+        DeleteScheduleButton.IsEnabled = !running;
+        LoadHistoryButton.IsEnabled = !running;
+        // Lock target selection, but keep the cards fully visible so their live progress stays readable
+        TargetsItemsControl.IsHitTestVisible = !running;
+
+        if (running)
+        {
+            int count = _activeProgresses.Count > 0 ? _activeProgresses.Count : GetSelectedTargets().Count;
+            JobSummaryTitle.Text = DirectMirrorRadio.IsChecked == true
+                ? $"Cloning to {count} disk{(count == 1 ? "" : "s")}..."
+                : $"Backing up to {count} disk{(count == 1 ? "" : "s")}...";
+            JobSummaryDetail.Text = "Progress is shown on each target. Keep all drives connected until it finishes.";
+        }
+        else
+        {
+            UpdateJobSummary();
+        }
     }
 
     private void AppendLog(string message)
@@ -800,170 +916,4 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         LogCountText.Text = "";
     }
 
-    private void AppendTerminalText(string text, string? brushKey = null)
-    {
-        CreateTerminalProgressRun(text, brushKey);
-    }
-
-    private Run CreateTerminalProgressRun(string initialText, string? brushKey = null)
-    {
-        var run = new Run(initialText);
-        if (brushKey != null)
-        {
-            run.SetResourceReference(TextElement.ForegroundProperty, brushKey);
-        }
-        TerminalOutputText.Inlines.InsertBefore(CursorContainer, run);
-        TerminalScrollViewer.ScrollToEnd();
-        return run;
-    }
-
-    private async void StartScanButton_Click(object sender, RoutedEventArgs e)
-    {
-        StartScanButton.IsEnabled = false;
-
-        // 1. Fade out the centered button panel
-        var fadeButton = new DoubleAnimation(1.0, 0.0, TimeSpan.FromSeconds(0.25));
-        StartButtonCenteringGrid.BeginAnimation(OpacityProperty, fadeButton);
-        await Task.Delay(250);
-        StartButtonCenteringGrid.Visibility = Visibility.Collapsed;
-
-        // 2. Make ConsoleBorder visible and animate its expansion (Scale Transform)
-        ConsoleBorder.Visibility = Visibility.Visible;
-        var scaleXAnim = new DoubleAnimation(0.1, 1.0, TimeSpan.FromSeconds(0.4))
-        {
-            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
-        };
-        var scaleYAnim = new DoubleAnimation(0.05, 1.0, TimeSpan.FromSeconds(0.4))
-        {
-            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
-        };
-        var opacityAnim = new DoubleAnimation(0.0, 1.0, TimeSpan.FromSeconds(0.3));
-
-        ConsoleScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleXAnim);
-        ConsoleScale.BeginAnimation(ScaleTransform.ScaleYProperty, scaleYAnim);
-        ConsoleBorder.BeginAnimation(OpacityProperty, opacityAnim);
-        await Task.Delay(400);
-
-        // 3. Simulated Windows CLI Update & Scan sequence
-        // Theme brush keys so the console reads correctly in light and dark mode
-        const string darkBrush = TextPrimary;
-        const string blueBrush = AccentText;
-        const string greenBrush = SuccessText;
-        const string yellowBrush = CautionText;
-
-        // Windows CMD Header
-        AppendTerminalText("Microsoft Windows [Version 10.0.22631.3527]\n", darkBrush);
-        AppendTerminalText("(c) Microsoft Corporation. All rights reserved.\n\n", darkBrush);
-        await Task.Delay(400);
-
-        // Typing out Windows command
-        AppendTerminalText("C:\\Users\\Administrator> ", darkBrush);
-        string cmd = "replicore.exe --scan --verbose\n";
-        foreach (char c in cmd)
-        {
-            AppendTerminalText(c.ToString(), darkBrush);
-            await Task.Delay(25);
-        }
-        await Task.Delay(200);
-
-        // Windows scanning logs
-        AppendTerminalText("[INFO]  Loading Replicore Kernel Driver (replicore.sys)... ", darkBrush);
-        await Task.Delay(300);
-        AppendTerminalText("SUCCESS\n", greenBrush);
-
-        AppendTerminalText("[INFO]  Checking Administrator elevation tokens... ", darkBrush);
-        await Task.Delay(200);
-        AppendTerminalText("ELEVATED\n", blueBrush);
-
-        AppendTerminalText("[INFO]  Connecting to Windows Volume Shadow Copy Service (VSS)... ", darkBrush);
-        await Task.Delay(350);
-        AppendTerminalText("CONNECTED\n", greenBrush);
-
-        AppendTerminalText("[INFO]  Registering VSS writers and checking providers... ", darkBrush);
-        await Task.Delay(250);
-        AppendTerminalText("Done\n", greenBrush);
-
-        AppendTerminalText("[INFO]  Querying WMI (Windows Management Instrumentation) storage namespaces...\n", darkBrush);
-        await Task.Delay(300);
-
-        // Windows-style progress bar using blocks
-        var progressRun = CreateTerminalProgressRun("Scanning Storage Topology: [                    ] 0%", blueBrush);
-        for (int p = 0; p <= 100; p += 5)
-        {
-            int blocks = p / 5; // Max 20 blocks
-            string bar = new string('█', blocks) + new string('░', 20 - blocks);
-            progressRun.Text = $"Scanning Storage Topology: [{bar}] {p}%";
-            await Task.Delay(35);
-        }
-        AppendTerminalText("\n", darkBrush);
-        await Task.Delay(300);
-
-        AppendTerminalText("[INFO]  Resolving physical disk partition maps & mount points...\n", darkBrush);
-        await Task.Delay(200);
-
-        // Run hardware enumeration asynchronously
-        List<DiskInfo> disks = new();
-        try
-        {
-            disks = await Task.Run(() => _diskService.GetPhysicalDisks());
-        }
-        catch (Exception ex)
-        {
-            AppendTerminalText($"[ERROR] WMI Storage Enumeration failed: {ex.Message}\n", CriticalText);
-            AppendTerminalText("[FATAL] Initialization halted.\n", CriticalText);
-            StartScanButton.IsEnabled = true;
-            StartButtonCenteringGrid.Visibility = Visibility.Visible;
-            StartButtonCenteringGrid.Opacity = 1.0;
-            ConsoleBorder.Visibility = Visibility.Collapsed;
-            return;
-        }
-
-        _allDisks = disks;
-
-        // Print physical disk layouts in Windows style
-        foreach (var disk in _allDisks)
-        {
-            AppendTerminalText($"[  OK  ] Found PhysicalDrive{disk.Index} — {disk.Model}\n", greenBrush);
-            AppendTerminalText($"         Size: {disk.SizeFormatted} | Mounts: {(string.IsNullOrEmpty(disk.DriveLetters) ? "None" : disk.DriveLetters)} | S.M.A.R.T: ", darkBrush);
-            if (disk.IsHealthy)
-            {
-                AppendTerminalText("HEALTHY [OK]\n", greenBrush);
-            }
-            else
-            {
-                AppendTerminalText($"ALERT [{disk.HealthStatus}]\n", yellowBrush);
-            }
-            await Task.Delay(300);
-        }
-
-        AppendTerminalText("\nAll systems operational. Starting Replicore Dashboard GUI...\n", blueBrush);
-        await Task.Delay(800);
-
-        // Bind data and load UI states
-        MasterComboBox.ItemsSource = _allDisks;
-        if (_allDisks.Count > 0)
-        {
-            MasterComboBox.SelectedItem = _allDisks.FirstOrDefault(d => d.IsSystemDisk) ?? _allDisks[0];
-        }
-        UpdateTargetList();
-
-        AppendLog($"Found {_allDisks.Count} disk(s).");
-        UpdateDetailText(MasterComboBox, MasterDetailText, MasterPartitionsControl, MasterNoPartitionsText, MasterHealthPill, MasterHealthText);
-        UpdateDetailText(TargetsListBox, TargetDetailText, TargetPartitionsControl, TargetNoPartitionsText, TargetHealthPill, TargetHealthText);
-
-        // Fade out transition
-        DashboardGrid.Visibility = Visibility.Visible;
-        if (FindResource("TransitionToDashboard") is System.Windows.Media.Animation.Storyboard transition)
-        {
-            transition.Completed += (s, ev) =>
-            {
-                TerminalStartGrid.Visibility = Visibility.Collapsed;
-            };
-            transition.Begin(this);
-        }
-        else
-        {
-            TerminalStartGrid.Visibility = Visibility.Collapsed;
-        }
-    }
 }

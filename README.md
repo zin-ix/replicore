@@ -7,7 +7,7 @@ A Windows desktop utility built with .NET 8 and WPF to back up full system image
 Replicore is designed to provide both safe, high-level image backups and low-level raw drive replication:
 
 1. **Volume Shadow Copy (VSS) Image Backups**: For backing up active partitions (including your live Windows system drive), Replicore wraps the native Windows `wbadmin` engine. This utilizes VSS snapshotting under the hood to capture hot-backups of files in use without risking OS corruption.
-2. **Direct Sector-by-Sector Cloning**: For raw drive replication, Replicore uses P/Invoke Win32 API calls (`CreateFile`, `ReadFile`, `WriteFile`) to copy data directly from sector to sector between drives. This allows creating bootable duplicates of secondary or offline disks.
+2. **Multi-Disk Sector-by-Sector Cloning**: Clones one source disk to several targets at once. The source is read once and each chunk is written to every target in parallel. Mounted source volumes (including the running Windows disk) are read from Volume Shadow Copy snapshots so the copy is consistent; BitLocker-encrypted in-use volumes are refused rather than copied inconsistently. Each target can be verified against the source after copying, and on larger targets the GPT backup table is moved to the real end of the disk. Partition tables are written last, so a cancelled clone leaves the target blank rather than half-valid.
 3. **Task Scheduler Integration**: Automate your backups directly from the interface. It registers weekly Task Scheduler tasks running under the local SYSTEM account to keep system images up-to-date in the background.
 4. **Smart Safety Guards**:
    - Prevention of cloning onto the active source drive.

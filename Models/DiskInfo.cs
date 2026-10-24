@@ -1,3 +1,6 @@
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+
 namespace Replicore.Models;
 
 /// <summary>
@@ -5,13 +8,29 @@ namespace Replicore.Models;
 /// Pulled from WMI (Win32_DiskDrive) rather than raw device enumeration, since WMI
 /// gives us friendly model names and sizes without needing a raw handle just to list disks.
 /// </summary>
-public class DiskInfo
+public class DiskInfo : INotifyPropertyChanged
 {
+    private bool _isSelected;
+    private CloneTaskProgress? _progress;
+
     /// <summary>WMI DeviceID, e.g. \\.\PHYSICALDRIVE0 — used for raw access later.</summary>
     public string DeviceId { get; set; } = string.Empty;
 
     /// <summary>Used in the UI to select multiple target drives for parallel cloning.</summary>
-    public bool IsSelected { get; set; }
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set { _isSelected = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Live progress of the clone/backup writing to this disk; null when idle.</summary>
+    public CloneTaskProgress? Progress
+    {
+        get => _progress;
+        set { _progress = value; OnPropertyChanged(); OnPropertyChanged(nameof(HasProgress)); }
+    }
+
+    public bool HasProgress => _progress != null;
 
     /// <summary>Index, e.g. 0, 1, 2 — matches "Disk 0" in Windows Disk Management.</summary>
     public int Index { get; set; }
@@ -72,7 +91,19 @@ public class DiskInfo
         (IsSystemDisk ? "  (System disk)" : "") +
         (!IsHealthy ? "  (Health alert)" : "");
 
+    /// <summary>Short connection label for the disk card badge — "USB" or "Internal".</summary>
+    public string ConnectionLabel =>
+        InterfaceType.Equals("USB", StringComparison.OrdinalIgnoreCase) ? "USB" : "Internal";
+
+    /// <summary>Card subtitle — "476.9 GB  •  C:, D:" or "476.9 GB  •  No drive letter".</summary>
+    public string SummaryLine =>
+        $"{SizeFormatted}   •   {(string.IsNullOrWhiteSpace(DriveLetters) ? "No drive letter" : DriveLetters)}";
+
     public override string ToString() => DisplayName;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    protected void OnPropertyChanged([CallerMemberName] string name = null!) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
 public class PartitionInfo
