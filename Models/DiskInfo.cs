@@ -69,8 +69,8 @@ public class DiskInfo
     public string DisplayName =>
         $"Disk {Index} — {Model} ({SizeFormatted})" +
         (string.IsNullOrWhiteSpace(DriveLetters) ? "" : $" [{DriveLetters}]") +
-        (IsSystemDisk ? "  ⚠ System Disk" : "") +
-        (!IsHealthy ? "  ⚠ HEALTH ALERT" : "");
+        (IsSystemDisk ? "  (System disk)" : "") +
+        (!IsHealthy ? "  (Health alert)" : "");
 
     public override string ToString() => DisplayName;
 }

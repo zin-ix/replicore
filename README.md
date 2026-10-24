@@ -14,7 +14,7 @@ Replicore is designed to provide both safe, high-level image backups and low-lev
    - Warning prompts when writing to active system boot volumes.
    - S.M.A.R.T. health checks to detect failing disks before operations start.
    - Multi-stage confirm-wipe validation prompts for destructive operations.
-5. **Modern Design**: Built with a custom, responsive light/dark zinc-colored UI theme inspired by modern design principles.
+5. **Windows 11 Design**: Fluent UI built with [WPF-UI](https://github.com/lepoco/wpfui) — Mica backdrop, native title bar, Fluent controls and dialogs, and automatic light/dark theme that follows Windows.
 
 ## Requirements
 
@@ -60,7 +60,7 @@ Replicore/
 │   ├── MainWindow.xaml            - UI interface (pickers, progress indicators, schedules)
 │   └── MainWindow.xaml.cs        - logic wiring, safety guards, Task Scheduler automation
 └── Themes/
-    └── ShadcnTheme.xaml          - shadcn-inspired zinc theme and control styles
+    └── AppStyles.xaml            - app styles layered on the WPF-UI Fluent theme
 ```
 
 ## Future Roadmap

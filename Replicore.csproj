@@ -22,6 +22,7 @@
   <ItemGroup>
     <!-- Used for WMI disk enumeration (model, size, drive letters) -->
     <PackageReference Include="System.Management" Version="8.0.0" />
+    <PackageReference Include="WPF-UI" Version="4.3.0" />
   </ItemGroup>
 
 </Project>

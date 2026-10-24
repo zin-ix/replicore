@@ -5,11 +5,24 @@ using System.Windows.Media.Animation;
 using System.Windows.Documents;
 using Replicore.Models;
 using Replicore.Services;
+using Wpf.Ui.Appearance;
+using ContentDialog = Wpf.Ui.Controls.ContentDialog;
+using ContentDialogButton = Wpf.Ui.Controls.ContentDialogButton;
+using ContentDialogResult = Wpf.Ui.Controls.ContentDialogResult;
+using ControlAppearance = Wpf.Ui.Controls.ControlAppearance;
 
 namespace Replicore.Views;
 
-public partial class MainWindow : Window
+public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 {
+    // Fluent theme brush keys, resolved dynamically so colors follow light/dark mode
+    private const string TextPrimary = "TextFillColorPrimaryBrush";
+    private const string TextTertiary = "TextFillColorTertiaryBrush";
+    private const string AccentText = "AccentTextFillColorPrimaryBrush";
+    private const string SuccessText = "SystemFillColorSuccessBrush";
+    private const string CautionText = "SystemFillColorCautionBrush";
+    private const string CriticalText = "SystemFillColorCriticalBrush";
+
     private readonly DiskEnumerationService _diskService = new();
     private readonly CloneService _cloneService = new();
     private CancellationTokenSource? _cts;
@@ -20,6 +33,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // Keep Mica and light/dark theme in sync with Windows settings
+        SystemThemeWatcher.Watch(this);
         // Disks will be loaded asynchronously during the terminal-style boot-up sequence
         ActiveProgressesControl.ItemsSource = _activeProgresses;
 
@@ -57,7 +72,37 @@ public partial class MainWindow : Window
         }
     }
 
-    private void LoadDisks()
+    private async Task ShowMessageAsync(string title, string message)
+    {
+        var dialog = new ContentDialog(RootContentDialogHost)
+        {
+            Title = title,
+            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+            CloseButtonText = "OK",
+            DefaultButton = ContentDialogButton.Close
+        };
+        await dialog.ShowAsync();
+    }
+
+    /// <summary>
+    /// Asks a yes/no question. Cancel is always the default button, so pressing Enter
+    /// never confirms a destructive action by accident.
+    /// </summary>
+    private async Task<bool> ConfirmAsync(string title, string message, string confirmText, bool destructive = false)
+    {
+        var dialog = new ContentDialog(RootContentDialogHost)
+        {
+            Title = title,
+            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+            PrimaryButtonText = confirmText,
+            PrimaryButtonAppearance = destructive ? ControlAppearance.Danger : ControlAppearance.Primary,
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Close
+        };
+        return await dialog.ShowAsync() == ContentDialogResult.Primary;
+    }
+
+    private async Task LoadDisksAsync()
     {
         try
         {
@@ -81,18 +126,15 @@ public partial class MainWindow : Window
         catch (System.Management.ManagementException ex)
         {
             AppendLog($"ERROR scanning disks: {ex.Message}");
-            MessageBox.Show(
-                "Access Denied: Failed to query physical drives.\n\n" +
-                "This application requires Administrator privileges to enumerate physical drives, partition layouts, and S.M.A.R.T. health data.\n\n" +
-                "Please run this terminal (or the built executable) as Administrator.",
-                "Access Denied — Replicore",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
+            await ShowMessageAsync("Access denied",
+                "Replicore couldn't query the physical drives.\n\n" +
+                "Administrator privileges are required to read physical drives, partition layouts and S.M.A.R.T. health data.\n\n" +
+                "Run this terminal (or the built executable) as Administrator.");
         }
         catch (Exception ex)
         {
             AppendLog($"ERROR scanning disks: {ex.Message}");
-            MessageBox.Show($"An unexpected error occurred while scanning disks:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            await ShowMessageAsync("Couldn't scan disks", $"An unexpected error occurred while scanning disks:\n{ex.Message}");
         }
     }
 
@@ -119,9 +161,7 @@ public partial class MainWindow : Window
             // Health status pill
             healthPill.Visibility = Visibility.Visible;
             healthText.Text = disk.IsHealthy ? "Healthy" : $"Alert: {disk.HealthStatus}";
-            healthText.Foreground = disk.IsHealthy 
-                ? (Brush)FindResource("SuccessBrush") 
-                : (Brush)FindResource("DestructiveBrush");
+            healthText.SetResourceReference(TextBlock.ForegroundProperty, disk.IsHealthy ? SuccessText : CriticalText);
         }
         else
         {
@@ -133,9 +173,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private void RefreshButton_Click(object sender, RoutedEventArgs e)
+    private async void RefreshButton_Click(object sender, RoutedEventArgs e)
     {
-        LoadDisks();
+        await LoadDisksAsync();
     }
 
     private void ModeRadio_Checked(object sender, RoutedEventArgs e)
@@ -143,17 +183,17 @@ public partial class MainWindow : Window
         if (DirectCloneWarningBanner == null || ProgressTitleText == null || StartBackupButton == null) return;
 
         bool isMirror = DirectMirrorRadio.IsChecked == true;
-        DirectCloneWarningBanner.Visibility = isMirror ? Visibility.Visible : Visibility.Collapsed;
+        DirectCloneWarningBanner.IsOpen = isMirror;
 
         if (isMirror)
         {
-            ProgressTitleText.Text = "Cloning Progress:";
-            StartBackupButton.Content = "Start Clone";
+            ProgressTitleText.Text = "Cloning progress";
+            StartBackupButton.Content = "Start clone";
         }
         else
         {
-            ProgressTitleText.Text = "Backup Progress:";
-            StartBackupButton.Content = "Start Backup";
+            ProgressTitleText.Text = "Backup progress";
+            StartBackupButton.Content = "Start backup";
         }
     }
 
@@ -161,16 +201,14 @@ public partial class MainWindow : Window
     {
         if (MasterComboBox.SelectedItem is not DiskInfo master)
         {
-            MessageBox.Show("Select a master (source) disk first.", "Replicore",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            await ShowMessageAsync("No source disk", "Select a source disk first.");
             return;
         }
 
         var selectedTargets = TargetsListBox.Items.Cast<DiskInfo>().Where(d => d.IsSelected).ToList();
         if (selectedTargets.Count == 0)
         {
-            MessageBox.Show("Please select at least one Target (Destination) disk using the checkboxes.", "Replicore",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            await ShowMessageAsync("No target disk", "Select at least one target disk using the checkboxes.");
             return;
         }
 
@@ -179,33 +217,30 @@ public partial class MainWindow : Window
         {
             if (master.Index == target.Index)
             {
-                MessageBox.Show($"Master and target cannot be the same disk (Disk {target.Index}).", "Replicore",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
+                await ShowMessageAsync("Same disk selected", $"The source and target can't be the same disk (Disk {target.Index}).");
                 return;
             }
 
             // --- Safety guard 2: warn before writing to a disk that holds Windows itself ---
             if (target.IsSystemDisk)
             {
-                var result = MessageBox.Show(
+                bool proceed = await ConfirmAsync("Target is your Windows disk",
                     $"'{target.NameLine}' appears to be the disk Windows is currently running from. " +
                     "Using it as a target is highly unusual and may fail or corrupt your running system.\n\nContinue anyway?",
-                    "Replicore — Warning",
-                    MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                    "Continue", destructive: true);
 
-                if (result != MessageBoxResult.Yes) return;
+                if (!proceed) return;
             }
 
             // --- Safety guard 3: warning if target health is failing ---
             if (!target.IsHealthy)
             {
-                var result = MessageBox.Show(
+                bool proceed = await ConfirmAsync("Target disk is failing",
                     $"Target disk '{target.NameLine}' reports a failing S.M.A.R.T. health status ({target.HealthStatus}). " +
                     "Writing to a failing drive is risky and can lead to backup corruption or hardware failure.\n\nAre you sure you want to proceed?",
-                    "Replicore — Critical Warning",
-                    MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                    "Continue", destructive: true);
 
-                if (result != MessageBoxResult.Yes) return;
+                if (!proceed) return;
             }
         }
 
@@ -218,43 +253,33 @@ public partial class MainWindow : Window
             {
                 if (target.SizeBytes < master.SizeBytes)
                 {
-                    MessageBox.Show(
-                        $"The Target disk '{target.NameLine}' ({target.SizeFormatted}) is smaller than the Master disk ({master.SizeFormatted}).\n\n" +
-                        "Direct Sector Mirroring requires all Target disks to be equal in size or larger than the Master disk.",
-                        "Replicore — Size Mismatch",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Error);
+                    await ShowMessageAsync("Target disk is too small",
+                        $"The target disk '{target.NameLine}' ({target.SizeFormatted}) is smaller than the source disk ({master.SizeFormatted}).\n\n" +
+                        "Direct disk mirroring requires every target disk to be the same size as the source disk or larger.");
                     return;
                 }
             }
 
             // --- Mirror Safety Check: Permanent Wipe Confirmation ---
             string targetsListStr = string.Join("\n", selectedTargets.Select(t => $"   • {t.NameLine} ({t.SizeFormatted})"));
-            
-            var confirmWipe = MessageBox.Show(
-                $"🚨 CRITICAL WARNING: DATA DESTRUCTION 🚨\n\n" +
-                $"You have selected 'Direct Disk Mirror'. This will completely OVERWRITE and WIPE all data, file systems, and partitions on the following target disk(s):\n\n" +
+
+            bool confirmWipe = await ConfirmAsync("Erase target disks?",
+                $"Direct disk mirroring will completely OVERWRITE and WIPE all data, file systems and partitions on the following target disk(s):\n\n" +
                 $"{targetsListStr}\n\n" +
                 $"All existing files on these drives will be permanently lost.\n\n" +
-                $"Once finished, these target drives will be exact duplicates of the master and bootable.\n\n" +
-                $"Are you 100% sure you want to completely format and overwrite these drives?",
-                "Permanent Wipe Confirmation",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Warning);
+                $"Once finished, these target drives will be exact, bootable duplicates of the source.\n\n" +
+                $"Are you sure you want to overwrite these drives?",
+                "Erase and continue", destructive: true);
 
-            if (confirmWipe != MessageBoxResult.Yes) return;
+            if (!confirmWipe) return;
 
-            var doubleConfirm = MessageBox.Show(
-                $"FINAL CHECK:\n\n" +
+            bool doubleConfirm = await ConfirmAsync("Final check",
                 $"You are about to wipe and overwrite the following drives:\n\n" +
                 $"{targetsListStr}\n\n" +
-                $"This action is permanent and CANNOT be undone.\n\n" +
-                $"Click Yes to proceed with formatting and mirroring.",
-                "Confirm Final Wipe",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Warning);
+                $"This action is permanent and CANNOT be undone.",
+                "Erase drives and clone", destructive: true);
 
-            if (doubleConfirm != MessageBoxResult.Yes) return;
+            if (!doubleConfirm) return;
 
             await RunMirrorCloneAsync(master, selectedTargets);
         }
@@ -262,13 +287,12 @@ public partial class MainWindow : Window
         {
             // --- Backup Safety Check: Backup Confirmation ---
             string targetsListStr = string.Join("\n", selectedTargets.Select(t => $"   • {t.NameLine}"));
-            var confirmBackup = MessageBox.Show(
+            bool confirmBackup = await ConfirmAsync("Start backup?",
                 $"This will create a backup image of:\n\n   {master.NameLine}\n\nto the following target drive(s):\n\n{targetsListStr}\n\n" +
-                "Existing data on the target locations is not erased. Continue?",
-                "Confirm Backup",
-                MessageBoxButton.YesNo, MessageBoxImage.Question);
+                "Existing data on the target locations is not erased.",
+                "Start backup");
 
-            if (confirmBackup != MessageBoxResult.Yes) return;
+            if (!confirmBackup) return;
 
             await RunBackupAsync(master, selectedTargets);
         }
@@ -510,8 +534,7 @@ public partial class MainWindow : Window
         if (TargetsListBox.SelectedItem is not DiskInfo target ||
             string.IsNullOrWhiteSpace(target.DriveLetters))
         {
-            MessageBox.Show("Select a target disk in the list to preview history (must have a mounted drive letter).", "Replicore",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            await ShowMessageAsync("Select a target disk", "Select a target disk in the list to view its backup history. It must have a mounted drive letter.");
             return;
         }
 
@@ -536,7 +559,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void SaveScheduleButton_Click(object sender, RoutedEventArgs e)
+    private async void SaveScheduleButton_Click(object sender, RoutedEventArgs e)
     {
         var selectedTargets = TargetsListBox.Items.Cast<DiskInfo>().Where(d => d.IsSelected).ToList();
         var validTargets = selectedTargets.Where(t => !string.IsNullOrWhiteSpace(t.DriveLetters)).ToList();
@@ -544,8 +567,8 @@ public partial class MainWindow : Window
         if (MasterComboBox.SelectedItem is not DiskInfo master || string.IsNullOrWhiteSpace(master.DriveLetters) ||
             validTargets.Count == 0)
         {
-            MessageBox.Show("Please select a Master and at least one Target drive with a mounted volume (drive letter) first to schedule a backup.", "Replicore",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            await ShowMessageAsync("Select disks first",
+                "To schedule a backup, select a source and at least one target drive that has a mounted volume (drive letter).");
             return;
         }
 
@@ -555,8 +578,7 @@ public partial class MainWindow : Window
         // Validate 24h format (HH:mm)
         if (!System.Text.RegularExpressions.Regex.IsMatch(time, @"^(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$"))
         {
-            MessageBox.Show("Please enter a valid time in 24-hour format (e.g., 02:00 or 23:30).", "Replicore",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            await ShowMessageAsync("Invalid time", "Enter a valid time in 24-hour format, for example 02:00 or 23:30.");
             return;
         }
 
@@ -608,16 +630,16 @@ public partial class MainWindow : Window
 
         if (allSuccess)
         {
-            MessageBox.Show($"Weekly backup scheduled successfully for {validTargets.Count} drive(s): {day}s at {time}.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            await ShowMessageAsync("Backup scheduled", $"Weekly backup scheduled for {validTargets.Count} drive(s): {day}s at {time}.");
         }
         else
         {
             string errors = string.Join("\n", errorMessages);
-            MessageBox.Show($"Some scheduled backup tasks failed to register:\n{errors}", "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            await ShowMessageAsync("Some tasks weren't registered", $"Some scheduled backup tasks failed to register:\n{errors}");
         }
     }
 
-    private void DeleteScheduleButton_Click(object sender, RoutedEventArgs e)
+    private async void DeleteScheduleButton_Click(object sender, RoutedEventArgs e)
     {
         try
         {
@@ -631,12 +653,12 @@ public partial class MainWindow : Window
             }
 
             AppendLog("Deleted scheduled backup task(s).");
-            MessageBox.Show("Scheduled backup task(s) deleted successfully.", "Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            await ShowMessageAsync("Scheduled tasks removed", "Scheduled backup task(s) were removed.");
         }
         catch (Exception ex)
         {
             AppendLog($"ERROR deleting task(s): {ex.Message}");
-            MessageBox.Show($"Error: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            await ShowMessageAsync("Couldn't remove tasks", $"Error: {ex.Message}");
         }
     }
 
@@ -725,46 +747,45 @@ public partial class MainWindow : Window
         {
             Padding = new Thickness(8, 5, 8, 5),
             CornerRadius = new CornerRadius(4),
-            Background = _logCount % 2 == 0
-                ? new SolidColorBrush(Color.FromArgb(10, 255, 255, 255))
-                : Brushes.Transparent
+            Background = Brushes.Transparent
         };
+        if (_logCount % 2 == 0)
+        {
+            row.SetResourceReference(Border.BackgroundProperty, "SubtleFillColorSecondaryBrush");
+        }
 
         var textBlock = new TextBlock
         {
             TextWrapping = TextWrapping.Wrap,
-            FontFamily = new FontFamily("Consolas"),
+            FontFamily = new FontFamily("Cascadia Mono, Consolas"),
             FontSize = 12
         };
 
-        textBlock.Inlines.Add(new System.Windows.Documents.Run($"{DateTime.Now:HH:mm:ss}  ")
-        {
-            Foreground = (Brush)FindResource("MutedForegroundBrush")
-        });
+        var timeRun = new Run($"{DateTime.Now:HH:mm:ss}  ");
+        timeRun.SetResourceReference(TextElement.ForegroundProperty, TextTertiary);
+        textBlock.Inlines.Add(timeRun);
 
         // Parse content for visual styling in log
-        Brush msgBrush = (Brush)FindResource("ConsoleForegroundBrush");
-        if (message.Contains("ERROR", StringComparison.OrdinalIgnoreCase) || 
+        string msgBrushKey = TextPrimary;
+        if (message.Contains("ERROR", StringComparison.OrdinalIgnoreCase) ||
             message.Contains("failed", StringComparison.OrdinalIgnoreCase))
         {
-            msgBrush = (Brush)FindResource("DestructiveBrush");
+            msgBrushKey = CriticalText;
         }
-        else if (message.Contains("successfully", StringComparison.OrdinalIgnoreCase) || 
+        else if (message.Contains("successfully", StringComparison.OrdinalIgnoreCase) ||
                  message.Contains("completed", StringComparison.OrdinalIgnoreCase))
         {
-            msgBrush = (Brush)FindResource("SuccessBrush");
+            msgBrushKey = SuccessText;
         }
         else if (message.Contains("Starting", StringComparison.OrdinalIgnoreCase) ||
                  message.Contains("Scanning", StringComparison.OrdinalIgnoreCase))
         {
-            // Electric purple/blue for starting highlights
-            msgBrush = new SolidColorBrush(Color.FromRgb(129, 140, 248));
+            msgBrushKey = AccentText;
         }
 
-        textBlock.Inlines.Add(new System.Windows.Documents.Run(message)
-        {
-            Foreground = msgBrush
-        });
+        var messageRun = new Run(message);
+        messageRun.SetResourceReference(TextElement.ForegroundProperty, msgBrushKey);
+        textBlock.Inlines.Add(messageRun);
 
         row.Child = textBlock;
         LogPanel.Children.Add(row);
@@ -779,37 +800,17 @@ public partial class MainWindow : Window
         LogCountText.Text = "";
     }
 
-    // Window Chrome control interactions
-    private void MinButton_Click(object sender, RoutedEventArgs e) => SystemCommands.MinimizeWindow(this);
-    
-    private void MaxButton_Click(object sender, RoutedEventArgs e)
+    private void AppendTerminalText(string text, string? brushKey = null)
     {
-        if (WindowState == WindowState.Maximized)
-            SystemCommands.RestoreWindow(this);
-        else
-            SystemCommands.MaximizeWindow(this);
-    }
-    
-    private void CloseButton_Click(object sender, RoutedEventArgs e) => SystemCommands.CloseWindow(this);
-
-    private void AppendTerminalText(string text, Brush? foreground = null)
-    {
-        var run = new Run(text);
-        if (foreground != null)
-        {
-            run.Foreground = foreground;
-        }
-        
-        TerminalOutputText.Inlines.InsertBefore(CursorContainer, run);
-        TerminalScrollViewer.ScrollToEnd();
+        CreateTerminalProgressRun(text, brushKey);
     }
 
-    private Run CreateTerminalProgressRun(string initialText, Brush? foreground = null)
+    private Run CreateTerminalProgressRun(string initialText, string? brushKey = null)
     {
         var run = new Run(initialText);
-        if (foreground != null)
+        if (brushKey != null)
         {
-            run.Foreground = foreground;
+            run.SetResourceReference(TextElement.ForegroundProperty, brushKey);
         }
         TerminalOutputText.Inlines.InsertBefore(CursorContainer, run);
         TerminalScrollViewer.ScrollToEnd();
@@ -844,12 +845,11 @@ public partial class MainWindow : Window
         await Task.Delay(400);
 
         // 3. Simulated Windows CLI Update & Scan sequence
-        // Define color brushes for light background
-        var darkBrush = new SolidColorBrush(Color.FromRgb(15, 23, 42)); // #0F172A
-        var blueBrush = new SolidColorBrush(Color.FromRgb(37, 99, 235)); // Windows Blue
-        var greenBrush = new SolidColorBrush(Color.FromRgb(5, 150, 105)); // Green (OK)
-        var yellowBrush = new SolidColorBrush(Color.FromRgb(217, 119, 6)); // Amber (Warn)
-        var grayBrush = new SolidColorBrush(Color.FromRgb(100, 116, 139)); // Slate Muted
+        // Theme brush keys so the console reads correctly in light and dark mode
+        const string darkBrush = TextPrimary;
+        const string blueBrush = AccentText;
+        const string greenBrush = SuccessText;
+        const string yellowBrush = CautionText;
 
         // Windows CMD Header
         AppendTerminalText("Microsoft Windows [Version 10.0.22631.3527]\n", darkBrush);
@@ -909,8 +909,8 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            AppendTerminalText($"[ERROR] WMI Storage Enumeration failed: {ex.Message}\n", new SolidColorBrush(Color.FromRgb(220, 38, 38)));
-            AppendTerminalText("[FATAL] Initialization halted.\n", new SolidColorBrush(Color.FromRgb(220, 38, 38)));
+            AppendTerminalText($"[ERROR] WMI Storage Enumeration failed: {ex.Message}\n", CriticalText);
+            AppendTerminalText("[FATAL] Initialization halted.\n", CriticalText);
             StartScanButton.IsEnabled = true;
             StartButtonCenteringGrid.Visibility = Visibility.Visible;
             StartButtonCenteringGrid.Opacity = 1.0;
