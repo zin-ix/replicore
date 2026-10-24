@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        xmlns:views="clr-namespace:Replicore.Views"
         Title="Replicore"
         Height="820" Width="1280"
         MinHeight="640" MinWidth="1000"
@@ -169,10 +170,29 @@
                                     <ComboBox x:Name="MasterComboBox" HorizontalAlignment="Stretch"
                                               ItemTemplate="{StaticResource DiskRowTemplate}"/>
 
+                                    <TextBlock Text="Partitions" Style="{StaticResource SectionTitleText}" Margin="0,20,0,12"/>
+                                    <views:PartitionMapBar x:Name="MasterLayoutBar" Height="28"/>
+
                                     <TextBlock Text="Volumes" Style="{StaticResource SectionTitleText}" Margin="0,20,0,12"/>
                                     <ItemsControl x:Name="MasterPartitionsControl" ItemTemplate="{StaticResource PartitionRowTemplate}"/>
                                     <TextBlock x:Name="MasterNoPartitionsText" Text="No mounted volumes" Style="{StaticResource CaptionText}"
                                                FontStyle="Italic" Visibility="Collapsed"/>
+
+                                    <TextBlock Text="Health" Style="{StaticResource SectionTitleText}" Margin="0,20,0,12"/>
+                                    <ui:InfoBar x:Name="MasterHealthBar" IsClosable="False" IsOpen="False" Margin="0,0,0,12"/>
+                                    <ItemsControl x:Name="MasterHealthDetailsControl">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,0,0,6">
+                                                    <TextBlock Text="{Binding Label}" Style="{StaticResource CaptionText}"/>
+                                                    <TextBlock Text="{Binding Value}" FontSize="12" HorizontalAlignment="Right"
+                                                               Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <TextBlock x:Name="MasterNoHealthText" Text="This drive doesn't report health data."
+                                               Style="{StaticResource CaptionText}" FontStyle="Italic" Visibility="Collapsed"/>
                                 </StackPanel>
                             </ScrollViewer>
                         </Border>
@@ -191,6 +211,9 @@
                                     <TextBlock x:Name="TargetCountText" Style="{StaticResource CaptionText}" Margin="10,0,0,0" VerticalAlignment="Center"/>
                                 </StackPanel>
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                    <ui:Button x:Name="AddImageButton" Content="Image file" Appearance="Transparent" Margin="0,0,4,0"
+                                               Icon="{ui:SymbolIcon Add20}" Click="AddImageButton_Click"
+                                               ToolTip="Clone the source into a .vhdx image file instead of a disk"/>
                                     <ui:Button x:Name="SelectAllButton" Content="Select all" Appearance="Transparent"
                                                Icon="{ui:SymbolIcon SelectAllOn20}" Click="SelectAllButton_Click"/>
                                     <ui:Button x:Name="ClearSelectionButton" Content="Clear" Appearance="Transparent" Margin="4,0,0,0"
@@ -242,9 +265,12 @@
                             </StackPanel>
 
                             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,16,0">
-                                <CheckBox x:Name="VerifyCheckBox" Content="Verify after cloning" IsChecked="True"
-                                          VerticalAlignment="Center" Margin="0,0,24,0"
-                                          ToolTip="Re-read every target and compare it with the source. Takes about as long as the copy itself."/>
+                                <StackPanel x:Name="CloneOptionsPanel" VerticalAlignment="Center" Margin="0,0,24,0">
+                                    <CheckBox x:Name="SmartCopyCheckBox" Content="Copy used space only" IsChecked="True" MinHeight="0"
+                                              ToolTip="Skip free space inside NTFS volumes. Much faster on a disk that isn't full, and keeps image files small. Turn off for an exact copy of every sector."/>
+                                    <CheckBox x:Name="VerifyCheckBox" Content="Verify after cloning" IsChecked="True" MinHeight="0" Margin="0,4,0,0"
+                                              ToolTip="Re-read every target and compare it with the source. Takes about as long as the copy itself."/>
+                                </StackPanel>
                                 <TextBlock Text="When finished" Style="{StaticResource CaptionText}" FontSize="13"
                                            VerticalAlignment="Center" Margin="0,0,10,0"/>
                                 <ComboBox x:Name="PostBackupActionComboBox" SelectedIndex="0" Width="170">

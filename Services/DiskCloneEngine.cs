@@ -5,11 +5,13 @@ using Microsoft.Win32.SafeHandles;
 namespace Replicore.Services;
 
 /// <summary>One disk being written by <see cref="DiskCloneEngine"/>, plus its outcome.</summary>
-public sealed class CloneTarget(int diskIndex, string deviceId, IProgress<CloneProgressEventArgs> progress)
+/// <param name="isBlank">True for a disk that was just created empty (a new image file), so it isn't erased first.</param>
+public sealed class CloneTarget(int diskIndex, string deviceId, IProgress<CloneProgressEventArgs> progress, bool isBlank = false)
 {
     public int DiskIndex { get; } = diskIndex;
     public string DeviceId { get; } = deviceId;
     public IProgress<CloneProgressEventArgs> Progress { get; } = progress;
+    public bool IsBlank { get; } = isBlank;
 
     /// <summary>True once the copy (and verification, if requested) finished and the disk was finalized.</summary>
     public bool Succeeded { get; internal set; }
@@ -33,17 +35,27 @@ public sealed class CloneTarget(int diskIndex, string deviceId, IProgress<CloneP
 ///   or failed target is left looking empty rather than half-valid.
 /// - Optionally re-reads every target from the device and compares it with the source.
 /// - On a larger target, the GPT backup table is moved to the real end of the disk.
+/// - With smart copy, free space inside NTFS volumes is skipped (in both the copy and the verify).
+///   The target's free clusters keep whatever they held before, which NTFS never reads.
 /// </summary>
 public sealed class DiskCloneEngine(CloneService cloneService)
 {
     private const int ChunkSize = 8 * 1024 * 1024;
+    // Smart copy skips free space in whole blocks of this size
+    private const int BlockSize = 1024 * 1024;
     private static readonly TimeSpan ProgressInterval = TimeSpan.FromMilliseconds(500);
 
     // diskpart relies on the Virtual Disk Service, which fails when several instances run at once
     private readonly SemaphoreSlim _diskpartLock = new(1, 1);
 
+    /// <summary>One chunk of the source and the parts of it to copy, relative to <see cref="Offset"/>.</summary>
+    private sealed record Chunk(long Offset, int Length, List<(int Start, int Length)> Segments)
+    {
+        public long Bytes { get; } = Segments.Sum(s => (long)s.Length);
+    }
+
     public async Task CloneAsync(int sourceIndex, string sourceDeviceId, IReadOnlyList<string> sourceDriveLetters,
-        IReadOnlyList<CloneTarget> targets, bool verify, IProgress<string> log, CancellationToken token)
+        IReadOnlyList<CloneTarget> targets, bool verify, bool smartCopy, IProgress<string> log, CancellationToken token)
     {
         using var source = NativeDisk.OpenForRead(sourceDeviceId);
         long sourceLength = NativeDisk.GetLength(source);
@@ -54,6 +66,12 @@ public sealed class DiskCloneEngine(CloneService cloneService)
         using var snapshot = await Task.Run(() =>
             SourceSnapshot.Create(sourceIndex, source, sectorSize, sourceDriveLetters, log.Report), token);
 
+        var plan = await Task.Run(() =>
+            BuildPlan(sourceLength, smartCopy ? AllocationMap.Create(snapshot, log.Report) : null), token);
+        long plannedBytes = plan.Sum(c => c.Bytes);
+        if (smartCopy)
+            log.Report($"Smart copy: {FormatGB(plannedBytes)} of {FormatGB(sourceLength)} needs to be copied.");
+
         try
         {
             await Task.WhenAll(targets.Select(t => PrepareTargetAsync(t, sourceLength, sectorSize, token)));
@@ -61,10 +79,10 @@ public sealed class DiskCloneEngine(CloneService cloneService)
             if (active.Count == 0) return;
 
             var reader = new SourceReader(source, snapshot);
-            await Task.Run(() => CopyPass(reader, sourceLength, active, token), token);
+            await Task.Run(() => CopyPass(reader, plan, plannedBytes, active, token), token);
 
             if (verify && active.Any(t => t.IsActive))
-                await Task.Run(() => VerifyPass(reader, sourceLength, active, token), token);
+                await Task.Run(() => VerifyPass(reader, plan, plannedBytes, active, token), token);
 
             foreach (var target in active.Where(t => t.IsActive))
                 FinalizeTarget(target, sourceLength, sectorSize, verify);
@@ -80,24 +98,27 @@ public sealed class DiskCloneEngine(CloneService cloneService)
     {
         try
         {
-            Report(target, "Erasing", null, "Erasing the partition table with diskpart...");
-            bool erased;
-            await _diskpartLock.WaitAsync(token);
-            try
+            if (!target.IsBlank)
             {
-                erased = await cloneService.CleanDiskAsync(target.DiskIndex, target.Progress, token);
+                Report(target, "Erasing", null, "Erasing the partition table with diskpart...");
+                bool erased;
+                await _diskpartLock.WaitAsync(token);
+                try
+                {
+                    erased = await cloneService.CleanDiskAsync(target.DiskIndex, target.Progress, token);
+                }
+                finally
+                {
+                    _diskpartLock.Release();
+                }
+                if (!erased)
+                {
+                    Fail(target, "diskpart couldn't erase the disk, so it wasn't written to.");
+                    return;
+                }
+                // Give Windows a moment to drop the old volumes before opening the raw disk
+                await Task.Delay(3000, token);
             }
-            finally
-            {
-                _diskpartLock.Release();
-            }
-            if (!erased)
-            {
-                Fail(target, "diskpart couldn't erase the disk, so it wasn't written to.");
-                return;
-            }
-            // Give Windows a moment to drop the old volumes before opening the raw disk
-            await Task.Delay(3000, token);
 
             target.Handle = NativeDisk.OpenForWrite(target.DeviceId);
             target.Length = NativeDisk.GetLength(target.Handle);
@@ -123,13 +144,47 @@ public sealed class DiskCloneEngine(CloneService cloneService)
         yield return 0;
     }
 
-    private static void CopyPass(SourceReader reader, long sourceLength, List<CloneTarget> targets, CancellationToken token)
+    /// <summary>The chunks to copy, in write order, each with the parts of it that hold data.</summary>
+    private static List<Chunk> BuildPlan(long sourceLength, AllocationMap? map)
     {
         long chunkCount = (sourceLength + ChunkSize - 1) / ChunkSize;
-        var order = WriteOrder(chunkCount).ToList();
-        var buffers = new[] { new AlignedBuffer(ChunkSize), new AlignedBuffer(ChunkSize) };
+        var plan = new List<Chunk>();
+        foreach (long index in WriteOrder(chunkCount))
+        {
+            long offset = index * ChunkSize;
+            int length = (int)Math.Min(ChunkSize, sourceLength - offset);
+            List<(int Start, int Length)> segments = map == null ? [(0, length)] : UsedSegments(map, offset, length);
+            if (segments.Count > 0) plan.Add(new Chunk(offset, length, segments));
+        }
+        return plan;
+    }
 
-        int LengthOf(long chunk) => (int)Math.Min(ChunkSize, sourceLength - chunk * ChunkSize);
+    /// <summary>The blocks of a chunk that aren't free space, with neighbouring blocks merged.</summary>
+    private static List<(int Start, int Length)> UsedSegments(AllocationMap map, long chunkOffset, int chunkLength)
+    {
+        var segments = new List<(int Start, int Length)>();
+        for (int start = 0; start < chunkLength; start += BlockSize)
+        {
+            int length = Math.Min(BlockSize, chunkLength - start);
+            if (map.IsFree(chunkOffset + start, length)) continue;
+
+            if (segments.Count > 0 && segments[^1].Start + segments[^1].Length == start)
+                segments[^1] = (segments[^1].Start, segments[^1].Length + length);
+            else
+                segments.Add((start, length));
+        }
+        return segments;
+    }
+
+    private static void ReadChunk(SourceReader reader, Chunk chunk, AlignedBuffer buffer)
+    {
+        foreach (var (start, length) in chunk.Segments)
+            reader.Read(chunk.Offset + start, buffer, start, length);
+    }
+
+    private static void CopyPass(SourceReader reader, List<Chunk> plan, long plannedBytes, List<CloneTarget> targets, CancellationToken token)
+    {
+        var buffers = new[] { new AlignedBuffer(ChunkSize), new AlignedBuffer(ChunkSize) };
 
         foreach (var target in targets) Report(target, "Cloning", 0, "Copying sectors...");
 
@@ -137,47 +192,46 @@ public sealed class DiskCloneEngine(CloneService cloneService)
         var lastReport = TimeSpan.Zero;
         long bytesDone = 0;
 
-        reader.Read(order[0] * ChunkSize, buffers[0], LengthOf(order[0]));
+        ReadChunk(reader, plan[0], buffers[0]);
 
-        for (int i = 0; i < order.Count; i++)
+        for (int i = 0; i < plan.Count; i++)
         {
             token.ThrowIfCancellationRequested();
 
-            long chunk = order[i];
-            long offset = chunk * ChunkSize;
-            int length = LengthOf(chunk);
+            var chunk = plan[i];
             var current = buffers[i % 2];
 
             // Read the next chunk while this one is being written
             Task? nextRead = null;
-            if (i + 1 < order.Count)
+            if (i + 1 < plan.Count)
             {
-                long nextChunk = order[i + 1];
+                var nextChunk = plan[i + 1];
                 var nextBuffer = buffers[(i + 1) % 2];
-                nextRead = Task.Run(() => reader.Read(nextChunk * ChunkSize, nextBuffer, LengthOf(nextChunk)), token);
+                nextRead = Task.Run(() => ReadChunk(reader, nextChunk, nextBuffer), token);
             }
 
             Parallel.ForEach(targets.Where(t => t.IsActive), target =>
             {
                 try
                 {
-                    RandomAccess.Write(target.Handle!, current.Span(length), offset);
+                    foreach (var (start, length) in chunk.Segments)
+                        RandomAccess.Write(target.Handle!, current.Span(chunk.Length).Slice(start, length), chunk.Offset + start);
                 }
                 catch (Exception ex)
                 {
-                    Fail(target, $"Write failed at {FormatGB(offset)}: {ex.Message}");
+                    Fail(target, $"Write failed at {FormatGB(chunk.Offset)}: {ex.Message}");
                 }
             });
 
             nextRead?.GetAwaiter().GetResult();
 
-            bytesDone += length;
+            bytesDone += chunk.Bytes;
             if (!targets.Any(t => t.IsActive)) return;
 
-            if (stopwatch.Elapsed - lastReport >= ProgressInterval || i == order.Count - 1)
+            if (stopwatch.Elapsed - lastReport >= ProgressInterval || i == plan.Count - 1)
             {
                 lastReport = stopwatch.Elapsed;
-                ReportThroughput(targets, "Cloning", bytesDone, sourceLength, stopwatch.Elapsed);
+                ReportThroughput(targets, "Cloning", bytesDone, plannedBytes, stopwatch.Elapsed);
             }
         }
 
@@ -189,7 +243,7 @@ public sealed class DiskCloneEngine(CloneService cloneService)
     }
 
     /// <summary>Re-reads every target straight from the device and compares it with the source.</summary>
-    private static void VerifyPass(SourceReader reader, long sourceLength, List<CloneTarget> targets, CancellationToken token)
+    private static void VerifyPass(SourceReader reader, List<Chunk> plan, long plannedBytes, List<CloneTarget> targets, CancellationToken token)
     {
         var verifying = targets.Where(t => t.IsActive).ToList();
         var readers = verifying.ToDictionary(t => t, t => (Handle: NativeDisk.OpenForRead(t.DeviceId), Buffer: new AlignedBuffer(ChunkSize)));
@@ -200,34 +254,46 @@ public sealed class DiskCloneEngine(CloneService cloneService)
             var sourceBuffer = new AlignedBuffer(ChunkSize);
             var stopwatch = Stopwatch.StartNew();
             var lastReport = TimeSpan.Zero;
+            long bytesDone = 0;
 
-            for (long offset = 0; offset < sourceLength; offset += ChunkSize)
+            for (int i = 0; i < plan.Count; i++)
             {
                 token.ThrowIfCancellationRequested();
-                int length = (int)Math.Min(ChunkSize, sourceLength - offset);
-                reader.Read(offset, sourceBuffer, length);
+                var chunk = plan[i];
+                ReadChunk(reader, chunk, sourceBuffer);
 
                 Parallel.ForEach(verifying.Where(t => t.IsActive), target =>
                 {
-                    try
+                    var (handle, buffer) = readers[target];
+                    foreach (var (start, length) in chunk.Segments)
                     {
-                        var (handle, buffer) = readers[target];
-                        SourceReader.ReadExact(handle, buffer.Span(length), offset);
-                        if (!buffer.Span(length).SequenceEqual(sourceBuffer.Span(length)))
-                            Fail(target, $"Verification failed: data at {FormatGB(offset)} doesn't match the source.");
-                    }
-                    catch (Exception ex)
-                    {
-                        Fail(target, $"Verification read failed at {FormatGB(offset)}: {ex.Message}");
+                        long offset = chunk.Offset + start;
+                        try
+                        {
+                            var expected = sourceBuffer.Span(chunk.Length).Slice(start, length);
+                            var actual = buffer.Span(chunk.Length).Slice(start, length);
+                            SourceReader.ReadExact(handle, actual, offset);
+                            if (!actual.SequenceEqual(expected))
+                            {
+                                Fail(target, $"Verification failed: data at {FormatGB(offset)} doesn't match the source.");
+                                return;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Fail(target, $"Verification read failed at {FormatGB(offset)}: {ex.Message}");
+                            return;
+                        }
                     }
                 });
 
+                bytesDone += chunk.Bytes;
                 if (!verifying.Any(t => t.IsActive)) return;
 
-                if (stopwatch.Elapsed - lastReport >= ProgressInterval || offset + length >= sourceLength)
+                if (stopwatch.Elapsed - lastReport >= ProgressInterval || i == plan.Count - 1)
                 {
                     lastReport = stopwatch.Elapsed;
-                    ReportThroughput(verifying, "Verifying", offset + length, sourceLength, stopwatch.Elapsed);
+                    ReportThroughput(verifying, "Verifying", bytesDone, plannedBytes, stopwatch.Elapsed);
                 }
             }
         }
@@ -290,14 +356,15 @@ public sealed class DiskCloneEngine(CloneService cloneService)
         target.Progress.Report(new CloneProgressEventArgs { Phase = "Failed", Message = $"ERROR: {error}" });
     }
 
-    private static string FormatGB(long bytes) => bytes >= 1024L * 1024 * 1024
+    internal static string FormatGB(long bytes) => bytes >= 1024L * 1024 * 1024
         ? $"{bytes / (1024.0 * 1024 * 1024):0.##} GB"
         : $"{bytes / (1024.0 * 1024):0.#} MB";
 
     /// <summary>Reads source bytes, taking snapshotted volume ranges from their shadow copies.</summary>
     private sealed class SourceReader(SafeFileHandle source, SourceSnapshot snapshot)
     {
-        public void Read(long offset, AlignedBuffer destination, int length)
+        /// <summary>Reads <paramref name="length"/> source bytes at <paramref name="offset"/> into the buffer at <paramref name="destinationOffset"/>.</summary>
+        public void Read(long offset, AlignedBuffer destination, int destinationOffset, int length)
         {
             int done = 0;
             while (done < length)
@@ -309,7 +376,7 @@ public sealed class DiskCloneEngine(CloneService cloneService)
                 if (region != null)
                 {
                     int count = (int)Math.Min(remaining, region.DiskOffset + region.Length - position);
-                    ReadInto(region.Shadow, destination, done, count, position - region.DiskOffset);
+                    ReadInto(region.Shadow, destination, destinationOffset + done, count, position - region.DiskOffset);
                     done += count;
                 }
                 else
@@ -317,7 +384,7 @@ public sealed class DiskCloneEngine(CloneService cloneService)
                     long nextRegion = snapshot.Regions.Where(r => r.DiskOffset > position)
                         .Select(r => r.DiskOffset).DefaultIfEmpty(long.MaxValue).Min();
                     int count = (int)Math.Min(remaining, nextRegion - position);
-                    ReadInto(source, destination, done, count, position);
+                    ReadInto(source, destination, destinationOffset + done, count, position);
                     done += count;
                 }
             }

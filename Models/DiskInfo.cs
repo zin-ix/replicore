@@ -50,14 +50,32 @@ public class DiskInfo : INotifyPropertyChanged
     /// <summary>Interface type, e.g. "USB", "SCSI", "IDE" — used to flag external/removable disks.</summary>
     public string InterfaceType { get; set; } = string.Empty;
 
-    /// <summary>S.M.A.R.T. health status (e.g., "OK", "Pred Fail", "Degraded").</summary>
-    public string HealthStatus { get; set; } = "OK";
+    /// <summary>Health and S.M.A.R.T. readings reported by Windows for this drive.</summary>
+    public DiskHealth Health { get; set; } = DiskHealth.Unknown;
 
-    /// <summary>True if the drive health is OK.</summary>
-    public bool IsHealthy => HealthStatus.Equals("OK", StringComparison.OrdinalIgnoreCase);
+    /// <summary>False when the drive reports a warning or a predicted failure.</summary>
+    public bool IsHealthy => Health.Level is HealthLevel.Healthy or HealthLevel.Unknown;
 
     /// <summary>Logical partitions mounted on this physical disk.</summary>
     public List<PartitionInfo> Partitions { get; set; } = new();
+
+    /// <summary>Every partition and unallocated gap in disk order, for the partition map.</summary>
+    public List<DiskSegment> Layout { get; set; } = new();
+
+    /// <summary>Exact size in bytes from the Storage API (WMI's <see cref="SizeBytes"/> is geometry-rounded).</summary>
+    public long LayoutSizeBytes { get; set; }
+
+    /// <summary>True for a new .vhdx image file chosen as a clone target rather than a physical disk.</summary>
+    public bool IsImageFile { get; set; }
+
+    /// <summary>Full path of the image file when <see cref="IsImageFile"/> is true.</summary>
+    public string ImagePath { get; set; } = string.Empty;
+
+    /// <summary>What the partition map says when there are no partitions.</summary>
+    public string EmptyLayoutText => IsImageFile ? "New image file" : "Empty disk";
+
+    /// <summary>Prefix for activity log lines — "Disk 2" or the image file name.</summary>
+    public string LogLabel => IsImageFile ? Model : $"Disk {Index}";
 
     public string SizeFormatted
     {
@@ -69,7 +87,7 @@ public class DiskInfo : INotifyPropertyChanged
     }
 
     /// <summary>Top line of the two-line combo box row — "Disk 0 — Samsung SSD 970 EVO".</summary>
-    public string NameLine => $"Disk {Index} — {Model}";
+    public string NameLine => IsImageFile ? $"Image file — {Model}" : $"Disk {Index} — {Model}";
 
     /// <summary>Bottom muted line — "953.9 GB  •  C:  •  System Disk" or "953.9 GB  •  No drive letter".</summary>
     public string MetaLine
@@ -79,7 +97,7 @@ public class DiskInfo : INotifyPropertyChanged
             var parts = new List<string> { SizeFormatted };
             parts.Add(string.IsNullOrWhiteSpace(DriveLetters) ? "No drive letter" : DriveLetters);
             if (IsSystemDisk) parts.Add("System Disk");
-            parts.Add(IsHealthy ? "Healthy" : $"Health Alert: {HealthStatus}");
+            parts.Add(Health.Label);
             return string.Join("   •   ", parts);
         }
     }
@@ -93,11 +111,13 @@ public class DiskInfo : INotifyPropertyChanged
 
     /// <summary>Short connection label for the disk card badge — "USB" or "Internal".</summary>
     public string ConnectionLabel =>
+        IsImageFile ? "Image file" :
         InterfaceType.Equals("USB", StringComparison.OrdinalIgnoreCase) ? "USB" : "Internal";
 
-    /// <summary>Card subtitle — "476.9 GB  •  C:, D:" or "476.9 GB  •  No drive letter".</summary>
-    public string SummaryLine =>
-        $"{SizeFormatted}   •   {(string.IsNullOrWhiteSpace(DriveLetters) ? "No drive letter" : DriveLetters)}";
+    /// <summary>Card subtitle — "476.9 GB  •  C:, D:", "476.9 GB  •  No drive letter" or the image's folder.</summary>
+    public string SummaryLine => IsImageFile
+        ? $"VHDX   •   {System.IO.Path.GetDirectoryName(ImagePath)}"
+        : $"{SizeFormatted}   •   {(string.IsNullOrWhiteSpace(DriveLetters) ? "No drive letter" : DriveLetters)}";
 
     public override string ToString() => DisplayName;
 

@@ -1,5 +1,7 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Documents;
 using Replicore.Models;
@@ -9,6 +11,7 @@ using ContentDialog = Wpf.Ui.Controls.ContentDialog;
 using ContentDialogButton = Wpf.Ui.Controls.ContentDialogButton;
 using ContentDialogResult = Wpf.Ui.Controls.ContentDialogResult;
 using ControlAppearance = Wpf.Ui.Controls.ControlAppearance;
+using InfoBarSeverity = Wpf.Ui.Controls.InfoBarSeverity;
 
 namespace Replicore.Views;
 
@@ -22,6 +25,11 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private const string CriticalText = "SystemFillColorCriticalBrush";
     private const string SuccessBackground = "SystemFillColorSuccessBackgroundBrush";
     private const string CriticalBackground = "SystemFillColorCriticalBackgroundBrush";
+    private const string CautionText = "SystemFillColorCautionBrush";
+    private const string CautionBackground = "SystemFillColorCautionBackgroundBrush";
+
+    // Free space at the end of a larger target worth pointing out in the preview
+    private const long MinimumShownGap = 16L * 1024 * 1024;
 
     private readonly DiskEnumerationService _diskService = new();
     private readonly CloneService _cloneService = new();
@@ -30,6 +38,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private int _logCount = 0;
     private readonly System.Collections.ObjectModel.ObservableCollection<CloneTaskProgress> _activeProgresses = new();
     private List<DiskInfo> _allDisks = new();
+    // .vhdx files added as clone targets; kept across rescans. Negative indexes never match a real disk.
+    private readonly List<DiskInfo> _imageTargets = new();
+    private int _nextImageIndex = -1;
 
     /// <param name="initialScan">Disk scan already started by the splash screen; null to scan on open.</param>
     public MainWindow(Task<List<DiskInfo>>? initialScan = null)
@@ -37,6 +48,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         InitializeComponent();
         // Keep Mica and light/dark theme in sync with Windows settings
         SystemThemeWatcher.Watch(this);
+
+        // The remove button on image file cards lives in a shared template, so its click is handled here
+        TargetsItemsControl.AddHandler(ButtonBase.ClickEvent, new RoutedEventHandler(TargetCard_Click));
 
         MasterComboBox.SelectionChanged += (_, _) =>
         {
@@ -51,20 +65,34 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
     private void UpdateTargetList()
     {
+        IEnumerable<DiskInfo> targets = _allDisks;
         if (MasterComboBox.SelectedItem is DiskInfo selectedMaster)
         {
             // Ensure the selected master is not checked as a target
             selectedMaster.IsSelected = false;
+            targets = targets.Where(d => d.Index != selectedMaster.Index);
+        }
 
-            var targets = _allDisks.Where(d => d.Index != selectedMaster.Index).ToList();
-            TargetsItemsControl.ItemsSource = targets;
-            TargetsEmptyState.Visibility = targets.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        }
+        // Image files are clone targets only; a Windows image backup needs a real drive
+        if (DirectMirrorRadio.IsChecked == true)
+            targets = targets.Concat(_imageTargets);
         else
-        {
-            TargetsItemsControl.ItemsSource = _allDisks;
-            TargetsEmptyState.Visibility = _allDisks.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        }
+            foreach (var image in _imageTargets) image.IsSelected = false;
+
+        var list = targets.ToList();
+        TargetsItemsControl.ItemsSource = list;
+        TargetsEmptyState.Visibility = list.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>"2 disks", "1 image file" or "1 disk and 1 image file".</summary>
+    private static string DescribeTargets(List<DiskInfo> targets)
+    {
+        int images = targets.Count(t => t.IsImageFile);
+        int disks = targets.Count - images;
+        var parts = new List<string>();
+        if (disks > 0) parts.Add($"{disks} disk{(disks == 1 ? "" : "s")}");
+        if (images > 0) parts.Add($"{images} image file{(images == 1 ? "" : "s")}");
+        return string.Join(" and ", parts);
     }
 
     private List<DiskInfo> GetSelectedTargets() =>
@@ -103,8 +131,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         else
         {
             string verb = isMirror ? "Clone" : "Back up";
-            JobSummaryTitle.Text = $"{verb} Disk {master.Index} to {targets.Count} disk{(targets.Count == 1 ? "" : "s")}";
-            JobSummaryDetail.Text = string.Join("   •   ", targets.Select(t => $"Disk {t.Index}  {t.Model} ({t.SizeFormatted})"));
+            JobSummaryTitle.Text = $"{verb} Disk {master.Index} to {DescribeTargets(targets)}";
+            JobSummaryDetail.Text = string.Join("   •   ", targets.Select(t =>
+                t.IsImageFile ? $"Image  {t.Model}" : $"Disk {t.Index}  {t.Model} ({t.SizeFormatted})"));
         }
 
         StartBackupButton.IsEnabled = MasterComboBox.SelectedItem is DiskInfo && targets.Count > 0;
@@ -151,18 +180,79 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     /// Asks a yes/no question. Cancel is always the default button, so pressing Enter
     /// never confirms a destructive action by accident.
     /// </summary>
-    private async Task<bool> ConfirmAsync(string title, string message, string confirmText, bool destructive = false)
+    /// <param name="content">The message text, or a custom element such as the partition preview.</param>
+    private async Task<bool> ConfirmAsync(string title, object content, string confirmText, bool destructive = false)
     {
         var dialog = new ContentDialog(RootContentDialogHost)
         {
             Title = title,
-            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+            Content = content is string message ? new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap } : content,
             PrimaryButtonText = confirmText,
             PrimaryButtonAppearance = destructive ? ControlAppearance.Danger : ControlAppearance.Primary,
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Close
         };
+        if (content is not string) dialog.DialogMaxWidth = 640;
         return await dialog.ShowAsync() == ContentDialogResult.Primary;
+    }
+
+    /// <summary>
+    /// Body of the erase confirmation: every target's partitions now and after the clone,
+    /// so it's obvious what is about to be replaced.
+    /// </summary>
+    private static UIElement BuildClonePreview(DiskInfo master, List<DiskInfo> targets, string intro, string outro)
+    {
+        var panel = new StackPanel();
+        panel.Children.Add(new TextBlock { Text = intro, TextWrapping = TextWrapping.Wrap });
+
+        foreach (var target in targets)
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = target.IsImageFile ? target.NameLine : $"{target.NameLine} ({target.SizeFormatted})",
+                FontWeight = FontWeights.SemiBold,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 16, 0, 8)
+            });
+
+            if (target.IsImageFile)
+                panel.Children.Add(PreviewRow("File", new TextBlock { Text = target.ImagePath, TextWrapping = TextWrapping.Wrap, FontSize = 12 }));
+            else
+                panel.Children.Add(PreviewRow("Now", new Views.PartitionMapBar { Segments = target.Layout }));
+            panel.Children.Add(PreviewRow("After", new Views.PartitionMapBar { Segments = LayoutAfterClone(master, target) }));
+        }
+
+        panel.Children.Add(new TextBlock { Text = outro, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 16, 0, 0) });
+        return new ScrollViewer { Content = panel, MaxHeight = 440, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+
+    private static Grid PreviewRow(string label, FrameworkElement content)
+    {
+        var row = new Grid { Margin = new Thickness(0, 0, 0, 6) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(52) });
+        row.ColumnDefinitions.Add(new ColumnDefinition());
+        var caption = new TextBlock { Text = label, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+        caption.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
+        row.Children.Add(caption);
+        Grid.SetColumn(content, 1);
+        row.Children.Add(content);
+        return row;
+    }
+
+    /// <summary>The source's partitions, plus the unallocated space left at the end of a larger target.</summary>
+    private static List<DiskSegment> LayoutAfterClone(DiskInfo master, DiskInfo target)
+    {
+        var layout = master.Layout.ToList();
+        long extra = target.IsImageFile ? 0 : target.LayoutSizeBytes - master.LayoutSizeBytes;
+        if (extra >= MinimumShownGap)
+        {
+            layout.Add(new DiskSegment
+            {
+                Offset = master.LayoutSizeBytes, Size = extra, Kind = SegmentKind.Unallocated, Title = "Free",
+                Description = $"Unallocated\n{DiskCloneEngine.FormatGB(extra)}. Extend a partition in Disk Management to use it."
+            });
+        }
+        return layout;
     }
 
     /// <summary>
@@ -223,24 +313,51 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             MasterDetailText.Text = $"Disk {disk.Index}   •   {disk.SizeFormatted}   •   {disk.ConnectionLabel}" +
                                     (disk.IsSystemDisk ? "   •   Windows disk" : "");
 
+            MasterLayoutBar.Segments = disk.Layout;
             MasterPartitionsControl.ItemsSource = disk.Partitions;
             MasterNoPartitionsText.Visibility = disk.Partitions.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
-            // Health status pill
+            // Health status pill, readings and any problems
+            var health = disk.Health;
+            var (textBrush, backgroundBrush) = HealthBrushes(health.Level);
             MasterHealthPill.Visibility = Visibility.Visible;
-            MasterHealthText.Text = disk.IsHealthy ? "Healthy" : $"Health alert: {disk.HealthStatus}";
-            MasterHealthText.SetResourceReference(TextBlock.ForegroundProperty, disk.IsHealthy ? SuccessText : CriticalText);
-            MasterHealthPill.SetResourceReference(Border.BackgroundProperty, disk.IsHealthy ? SuccessBackground : CriticalBackground);
+            MasterHealthPill.ToolTip = health.ToolTipText;
+            MasterHealthText.Text = health.Label;
+            MasterHealthText.SetResourceReference(TextBlock.ForegroundProperty, textBrush);
+            MasterHealthPill.SetResourceReference(Border.BackgroundProperty, backgroundBrush);
+
+            MasterHealthDetailsControl.ItemsSource = health.Details;
+            MasterNoHealthText.Visibility = health.Details.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            MasterHealthBar.IsOpen = health.Issues.Count > 0;
+            if (health.Issues.Count > 0)
+            {
+                bool critical = health.Level == HealthLevel.Critical;
+                MasterHealthBar.Severity = critical ? InfoBarSeverity.Error : InfoBarSeverity.Warning;
+                MasterHealthBar.Title = critical ? "This disk may fail soon" : "This disk reported a problem";
+                MasterHealthBar.Message = string.Join("\n", health.Issues) + "\nBack it up or clone it to a healthy disk soon.";
+            }
         }
         else
         {
             MasterModelText.Text = "No disk selected";
             MasterDetailText.Text = "";
+            MasterLayoutBar.Segments = null;
             MasterPartitionsControl.ItemsSource = null;
             MasterNoPartitionsText.Visibility = Visibility.Collapsed;
             MasterHealthPill.Visibility = Visibility.Collapsed;
+            MasterHealthDetailsControl.ItemsSource = null;
+            MasterNoHealthText.Visibility = Visibility.Collapsed;
+            MasterHealthBar.IsOpen = false;
         }
     }
+
+    private static (string Text, string Background) HealthBrushes(HealthLevel level) => level switch
+    {
+        HealthLevel.Healthy => (SuccessText, SuccessBackground),
+        HealthLevel.Warning => (CautionText, CautionBackground),
+        HealthLevel.Critical => (CriticalText, CriticalBackground),
+        _ => ("TextFillColorSecondaryBrush", "SubtleFillColorSecondaryBrush")
+    };
 
     private async void RefreshButton_Click(object sender, RoutedEventArgs e)
     {
@@ -255,12 +372,59 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private void ModeRadio_Checked(object sender, RoutedEventArgs e)
     {
         // Fires during InitializeComponent for the default-checked radio, before other controls exist
-        if (DirectCloneWarningBanner == null || StartBackupButton == null || JobSummaryTitle == null) return;
+        if (DirectCloneWarningBanner == null || StartBackupButton == null || JobSummaryTitle == null ||
+            CloneOptionsPanel == null || AddImageButton == null || TargetsEmptyState == null) return;
 
         bool isMirror = DirectMirrorRadio.IsChecked == true;
         DirectCloneWarningBanner.IsOpen = isMirror;
-        VerifyCheckBox.Visibility = isMirror ? Visibility.Visible : Visibility.Collapsed;
+        CloneOptionsPanel.Visibility = isMirror ? Visibility.Visible : Visibility.Collapsed;
+        AddImageButton.Visibility = isMirror ? Visibility.Visible : Visibility.Collapsed;
         StartBackupButton.Content = isMirror ? "Start clone" : "Start backup";
+        UpdateTargetList();
+        UpdateJobSummary();
+    }
+
+    private void AddImageButton_Click(object sender, RoutedEventArgs e)
+    {
+        int sourceIndex = (MasterComboBox.SelectedItem as DiskInfo)?.Index ?? 0;
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "Save the disk image as",
+            Filter = "Virtual hard disk (*.vhdx)|*.vhdx",
+            DefaultExt = ".vhdx",
+            AddExtension = true,
+            OverwritePrompt = true,
+            FileName = $"Replicore Disk {sourceIndex} {DateTime.Now:yyyy-MM-dd}.vhdx"
+        };
+        if (dialog.ShowDialog(this) != true) return;
+
+        var existing = _imageTargets.FirstOrDefault(i => i.ImagePath.Equals(dialog.FileName, StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+        {
+            existing.IsSelected = true;
+            return;
+        }
+
+        var image = new DiskInfo
+        {
+            IsImageFile = true,
+            ImagePath = dialog.FileName,
+            Model = Path.GetFileName(dialog.FileName),
+            Index = _nextImageIndex--
+        };
+        image.PropertyChanged += Disk_PropertyChanged;
+        _imageTargets.Add(image);
+        UpdateTargetList();
+        image.IsSelected = true;
+    }
+
+    private void TargetCard_Click(object sender, RoutedEventArgs e)
+    {
+        if (e.OriginalSource is not FrameworkElement { Tag: "RemoveImage", DataContext: DiskInfo image }) return;
+        e.Handled = true;
+        image.PropertyChanged -= Disk_PropertyChanged;
+        _imageTargets.Remove(image);
+        UpdateTargetList();
         UpdateJobSummary();
     }
 
@@ -279,8 +443,11 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             return;
         }
 
+        var diskTargets = selectedTargets.Where(t => !t.IsImageFile).ToList();
+        var imageTargets = selectedTargets.Where(t => t.IsImageFile).ToList();
+
         // --- Safety guard 1: master and target can't be the same physical disk ---
-        foreach (var target in selectedTargets)
+        foreach (var target in diskTargets)
         {
             if (master.Index == target.Index)
             {
@@ -302,8 +469,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             // --- Safety guard 3: warning if target health is failing ---
             if (!target.IsHealthy)
             {
-                bool proceed = await ConfirmAsync("Target disk is failing",
-                    $"Target disk '{target.NameLine}' reports a failing S.M.A.R.T. health status ({target.HealthStatus}). " +
+                bool proceed = await ConfirmAsync(target.Health.Level == HealthLevel.Critical ? "Target disk is failing" : "Target disk reported a problem",
+                    $"Target disk '{target.NameLine}' reports:\n\n{FormatIssues(target.Health)}\n\n" +
                     "Writing to a failing drive is risky and can lead to backup corruption or hardware failure.\n\nAre you sure you want to proceed?",
                     "Continue", destructive: true);
 
@@ -315,8 +482,20 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         if (isDirectMirror)
         {
+            // --- Source health: worth cloning now, but an unreadable sector stops the clone ---
+            if (!master.IsHealthy)
+            {
+                bool proceed = await ConfirmAsync("Source disk reported a problem",
+                    $"'{master.NameLine}' reports:\n\n{FormatIssues(master.Health)}\n\n" +
+                    "Copying its data to a healthy disk now is a good idea. If a sector can't be read, though, the clone stops " +
+                    "with an error, so keep the computer otherwise idle while it runs.\n\nStart the clone?",
+                    "Continue");
+
+                if (!proceed) return;
+            }
+
             // --- Mirror Safety Check: Size Mismatch ---
-            foreach (var target in selectedTargets)
+            foreach (var target in diskTargets)
             {
                 if (target.SizeBytes < master.SizeBytes)
                 {
@@ -327,29 +506,44 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 }
             }
 
-            // --- Mirror Safety Check: Permanent Wipe Confirmation ---
-            string targetsListStr = string.Join("\n", selectedTargets.Select(t => $"   • {t.NameLine} ({t.SizeFormatted})"));
+            if (!await CheckImageTargetsAsync(master, diskTargets, imageTargets)) return;
 
-            bool confirmWipe = await ConfirmAsync("Erase target disks?",
-                $"Disk cloning will completely OVERWRITE and WIPE all data, file systems and partitions on the following target disk(s):\n\n" +
-                $"{targetsListStr}\n\n" +
-                $"All existing files on these drives will be permanently lost.\n\n" +
-                $"Once finished, these target drives will be exact, bootable duplicates of the source.\n\n" +
-                (master.IsSystemDisk
-                    ? "Windows is running from the source disk. Replicore will take a Volume Shadow Copy snapshot so the copy is consistent.\n\n"
-                    : "") +
-                $"Are you sure you want to overwrite these drives?",
-                "Erase and continue", destructive: true);
+            string snapshotNote = master.IsSystemDisk
+                ? "Windows is running from the source disk. Replicore will take a Volume Shadow Copy snapshot so the copy is consistent.\n\n"
+                : "";
 
-            if (!confirmWipe) return;
+            if (diskTargets.Count > 0)
+            {
+                // --- Mirror Safety Check: Permanent Wipe Confirmation, with each target's partitions now and after ---
+                bool confirmWipe = await ConfirmAsync("Erase target disks?",
+                    BuildClonePreview(master, selectedTargets,
+                        "Disk cloning will completely OVERWRITE and WIPE all data, file systems and partitions on the target disk(s). " +
+                        "All existing files on them will be permanently lost.",
+                        "Once finished, the target drives will be exact, bootable duplicates of the source.\n\n" + snapshotNote +
+                        "Are you sure you want to overwrite these drives?"),
+                    "Erase and continue", destructive: true);
 
-            bool doubleConfirm = await ConfirmAsync("Final check",
-                $"You are about to wipe and overwrite the following drives:\n\n" +
-                $"{targetsListStr}\n\n" +
-                $"This action is permanent and CANNOT be undone.",
-                "Erase drives and clone", destructive: true);
+                if (!confirmWipe) return;
 
-            if (!doubleConfirm) return;
+                string targetsListStr = string.Join("\n", diskTargets.Select(t => $"   • {t.NameLine} ({t.SizeFormatted})"));
+                bool doubleConfirm = await ConfirmAsync("Final check",
+                    $"You are about to wipe and overwrite the following drives:\n\n" +
+                    $"{targetsListStr}\n\n" +
+                    $"This action is permanent and CANNOT be undone.",
+                    "Erase drives and clone", destructive: true);
+
+                if (!doubleConfirm) return;
+            }
+            else
+            {
+                bool confirmImage = await ConfirmAsync("Create image file?",
+                    BuildClonePreview(master, selectedTargets,
+                        $"Replicore will copy {master.NameLine} into a VHDX image file. No disks are erased.",
+                        snapshotNote + "Start creating the image?"),
+                    "Create image");
+
+                if (!confirmImage) return;
+            }
 
             await RunMirrorCloneAsync(master, selectedTargets);
         }
@@ -368,71 +562,161 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         }
     }
 
+    private static string FormatIssues(DiskHealth health) =>
+        string.Join("\n", health.Issues.Select(i => $"   • {i}"));
+
+    /// <summary>Checks each image file's destination drive before anything is written.</summary>
+    private async Task<bool> CheckImageTargetsAsync(DiskInfo master, List<DiskInfo> diskTargets, List<DiskInfo> imageTargets)
+    {
+        // Smart copy writes the used space of lettered volumes; other partitions are copied in full
+        long estimate = SmartCopyCheckBox.IsChecked == true
+            ? master.Partitions.Sum(p => p.SizeBytes - p.FreeSpaceBytes) +
+              master.Layout.Where(s => s.Kind != SegmentKind.Unallocated && s.DriveLetter.Length == 0).Sum(s => s.Size)
+            : master.LayoutSizeBytes;
+
+        foreach (var image in imageTargets)
+        {
+            string root = Path.GetPathRoot(image.ImagePath) ?? "";
+            string letter = root.TrimEnd('\\');
+
+            var erased = diskTargets.FirstOrDefault(d => d.Partitions.Any(p => p.DriveLetter.Equals(letter, StringComparison.OrdinalIgnoreCase)));
+            if (erased != null)
+            {
+                await ShowMessageAsync("Image is on a target disk",
+                    $"'{image.Model}' would be saved on {letter}, which is on {erased.NameLine} — a disk this clone erases.\n\n" +
+                    "Choose a folder on another drive.");
+                return false;
+            }
+
+            DriveInfo drive;
+            long free;
+            try
+            {
+                drive = new DriveInfo(root);
+                free = drive.AvailableFreeSpace;
+            }
+            catch (Exception ex)
+            {
+                await ShowMessageAsync("Can't save the image there", $"'{image.ImagePath}' isn't on a local drive that's available: {ex.Message}");
+                return false;
+            }
+
+            if (drive.DriveFormat.Equals("FAT32", StringComparison.OrdinalIgnoreCase) && estimate >= 4L * 1024 * 1024 * 1024)
+            {
+                await ShowMessageAsync("Drive can't hold the image",
+                    $"{letter} is formatted as FAT32, which can't store files larger than 4 GB. Save the image on an NTFS or exFAT drive.");
+                return false;
+            }
+
+            if (free < estimate)
+            {
+                bool proceed = await ConfirmAsync("Not enough free space?",
+                    $"The image of {master.NameLine} may need up to about {DiskCloneEngine.FormatGB(estimate)}, but {letter} has " +
+                    $"{DiskCloneEngine.FormatGB(free)} free. If it runs out of space, the clone fails and the partial image is deleted.\n\n" +
+                    "Continue anyway?",
+                    "Continue");
+                if (!proceed) return false;
+            }
+        }
+        return true;
+    }
+
     private async Task RunMirrorCloneAsync(DiskInfo master, List<DiskInfo> targets)
     {
         SetRunningState(true);
         ClearLog();
         bool verify = VerifyCheckBox.IsChecked == true;
-        AppendLog($"Starting clone of {master.NameLine} to {targets.Count} target(s){(verify ? " with verification" : "")}...");
+        bool smartCopy = SmartCopyCheckBox.IsChecked == true;
+        AppendLog($"Starting clone of {master.NameLine} to {DescribeTargets(targets)}" +
+                  $"{(smartCopy ? ", copying used space only" : "")}{(verify ? ", with verification" : "")}...");
 
         _cts = new CancellationTokenSource();
         _activeProgresses.Clear();
-        foreach (var disk in _allDisks) disk.Progress = null;
+        foreach (var disk in _allDisks.Concat(_imageTargets)) disk.Progress = null;
 
         var jobs = new List<(DiskInfo Disk, CloneTaskProgress Item, CloneTarget Target)>();
-        foreach (var target in targets)
-        {
-            var progressItem = new CloneTaskProgress
-            {
-                TargetDiskName = target.NameLine,
-                Percent = 0,
-                Status = "Preparing...",
-                StatusColor = "#3B82F6" // blue
-            };
-            _activeProgresses.Add(progressItem);
-            target.Progress = progressItem;
-
-            int diskIndex = target.Index;
-            var progress = new Progress<CloneProgressEventArgs>(e =>
-            {
-                switch (e.Phase)
-                {
-                    case "Erasing":
-                        progressItem.Status = "Erasing...";
-                        break;
-                    case "Cloning":
-                    case "Verifying":
-                        if (e.PercentComplete.HasValue)
-                        {
-                            progressItem.Percent = e.PercentComplete.Value;
-                            progressItem.Status = $"{e.Phase} ({e.PercentComplete.Value}%)";
-                        }
-                        if (e.SpeedMB.HasValue) progressItem.Speed = $"{e.SpeedMB.Value:F1} MB/s";
-                        if (e.EtaSeconds.HasValue) progressItem.Eta = FormatEta(e.EtaSeconds.Value);
-                        break;
-                    case "Finalizing":
-                        progressItem.Status = "Finalizing...";
-                        break;
-                    case "Failed":
-                        progressItem.Status = "Failed";
-                        progressItem.StatusColor = "#EF4444"; // red
-                        break;
-                }
-                if (!string.IsNullOrWhiteSpace(e.Message))
-                {
-                    AppendLog($"[Disk {diskIndex}] {e.Message}");
-                }
-            });
-
-            jobs.Add((target, progressItem, new CloneTarget(target.Index, target.DeviceId, progress)));
-        }
-
+        var images = new List<(DiskInfo Disk, VirtualDisk Vhd)>();
         try
         {
-            var engine = new DiskCloneEngine(_cloneService);
-            var sourceLetters = master.Partitions.Select(p => p.DriveLetter).Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
-            await engine.CloneAsync(master.Index, master.DeviceId, sourceLetters, jobs.Select(j => j.Target).ToList(),
-                verify, new Progress<string>(AppendLog), _cts.Token);
+            foreach (var target in targets)
+            {
+                var progressItem = new CloneTaskProgress
+                {
+                    TargetDiskName = target.NameLine,
+                    Percent = 0,
+                    Status = "Preparing...",
+                    StatusColor = "#3B82F6" // blue
+                };
+                _activeProgresses.Add(progressItem);
+                target.Progress = progressItem;
+
+                string label = target.LogLabel;
+                var progress = new Progress<CloneProgressEventArgs>(e =>
+                {
+                    switch (e.Phase)
+                    {
+                        case "Erasing":
+                            progressItem.Status = "Erasing...";
+                            break;
+                        case "Cloning":
+                        case "Verifying":
+                            if (e.PercentComplete.HasValue)
+                            {
+                                progressItem.Percent = e.PercentComplete.Value;
+                                progressItem.Status = $"{e.Phase} ({e.PercentComplete.Value}%)";
+                            }
+                            if (e.SpeedMB.HasValue) progressItem.Speed = $"{e.SpeedMB.Value:F1} MB/s";
+                            if (e.EtaSeconds.HasValue) progressItem.Eta = FormatEta(e.EtaSeconds.Value);
+                            break;
+                        case "Finalizing":
+                            progressItem.Status = "Finalizing...";
+                            break;
+                        case "Failed":
+                            progressItem.Status = "Failed";
+                            progressItem.StatusColor = "#EF4444"; // red
+                            break;
+                    }
+                    if (!string.IsNullOrWhiteSpace(e.Message))
+                    {
+                        AppendLog($"[{label}] {e.Message}");
+                    }
+                });
+
+                if (!target.IsImageFile)
+                {
+                    jobs.Add((target, progressItem, new CloneTarget(target.Index, target.DeviceId, progress)));
+                    continue;
+                }
+
+                // An image file becomes a blank disk: create the .vhdx and attach it without drive letters
+                try
+                {
+                    progressItem.Status = "Creating image...";
+                    AppendLog($"[{label}] Creating {target.ImagePath}...");
+                    var vhd = await Task.Run(() =>
+                    {
+                        // The save dialog already asked before replacing an existing file
+                        if (File.Exists(target.ImagePath)) File.Delete(target.ImagePath);
+                        return VirtualDisk.CreateFor(master.DeviceId, target.ImagePath);
+                    });
+                    images.Add((target, vhd));
+                    jobs.Add((target, progressItem, new CloneTarget(vhd.DiskIndex, vhd.PhysicalPath, progress, isBlank: true)));
+                }
+                catch (Exception ex)
+                {
+                    progressItem.Status = "Failed";
+                    progressItem.StatusColor = "#EF4444"; // red
+                    AppendLog($"[{label}] ERROR: Couldn't create the image file. {ex.Message}");
+                }
+            }
+
+            if (jobs.Count > 0)
+            {
+                var engine = new DiskCloneEngine(_cloneService);
+                var sourceLetters = master.Partitions.Select(p => p.DriveLetter).Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
+                await engine.CloneAsync(master.Index, master.DeviceId, sourceLetters, jobs.Select(j => j.Target).ToList(),
+                    verify, smartCopy, new Progress<string>(AppendLog), _cts.Token);
+            }
 
             foreach (var (disk, item, target) in jobs)
             {
@@ -442,7 +726,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                     item.Status = target.Verified ? "Verified" : "Completed";
                     item.StatusColor = "#10B981"; // green
                     item.Eta = "done";
-                    AppendLog($"[Disk {disk.Index}] Clone {(target.Verified ? "completed and verified" : "completed")} successfully.");
+                    AppendLog($"[{disk.LogLabel}] Clone {(target.Verified ? "completed and verified" : "completed")} successfully.");
                 }
                 else
                 {
@@ -451,7 +735,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
                 }
             }
 
-            if (jobs.All(j => j.Target.Succeeded))
+            if (jobs.Count == targets.Count && jobs.All(j => j.Target.Succeeded))
             {
                 AppendLog("All clones completed successfully!");
                 ExecutePostBackupAction();
@@ -478,7 +762,9 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             {
                 item.Status = "Cancelled";
                 item.StatusColor = "#71717A"; // gray
-                AppendLog($"[Disk {disk.Index}] Clone cancelled. The disk was left without a partition table.");
+                AppendLog(disk.IsImageFile
+                    ? $"[{disk.LogLabel}] Clone cancelled."
+                    : $"[{disk.LogLabel}] Clone cancelled. The disk was left without a partition table.");
             }
         }
         catch (Exception ex)
@@ -492,7 +778,34 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         }
         finally
         {
+            foreach (var (disk, vhd) in images)
+                await Task.Run(() => FinishImage(disk, vhd, jobs.Any(j => j.Disk == disk && j.Target.Succeeded)));
             SetRunningState(false);
+        }
+    }
+
+    /// <summary>Detaches a finished image; an image that didn't complete is deleted rather than left half-written.</summary>
+    private void FinishImage(DiskInfo image, VirtualDisk vhd, bool succeeded)
+    {
+        void Log(string message) => Dispatcher.Invoke(() => AppendLog($"[{image.LogLabel}] {message}"));
+
+        try { vhd.Dispose(); }
+        catch (Exception ex) { Log($"WARNING: Couldn't detach the image: {ex.Message}"); }
+
+        if (succeeded)
+        {
+            long size = new FileInfo(image.ImagePath).Length;
+            Log($"Image saved to {image.ImagePath} ({DiskCloneEngine.FormatGB(size)} on disk).");
+            return;
+        }
+        try
+        {
+            File.Delete(image.ImagePath);
+            Log("The incomplete image file was deleted.");
+        }
+        catch (Exception ex)
+        {
+            Log($"WARNING: Couldn't delete the incomplete image file: {ex.Message}");
         }
     }
 
@@ -835,6 +1148,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         ClearSelectionButton.IsEnabled = !running;
         PostBackupActionComboBox.IsEnabled = !running;
         VerifyCheckBox.IsEnabled = !running;
+        SmartCopyCheckBox.IsEnabled = !running;
+        AddImageButton.IsEnabled = !running;
         SaveScheduleButton.IsEnabled = !running;
         DeleteScheduleButton.IsEnabled = !running;
         LoadHistoryButton.IsEnabled = !running;
@@ -843,10 +1158,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         if (running)
         {
-            int count = _activeProgresses.Count > 0 ? _activeProgresses.Count : GetSelectedTargets().Count;
+            string targets = DescribeTargets(GetSelectedTargets());
             JobSummaryTitle.Text = DirectMirrorRadio.IsChecked == true
-                ? $"Cloning to {count} disk{(count == 1 ? "" : "s")}..."
-                : $"Backing up to {count} disk{(count == 1 ? "" : "s")}...";
+                ? $"Cloning to {targets}..."
+                : $"Backing up to {targets}...";
             JobSummaryDetail.Text = "Progress is shown on each target. Keep all drives connected until it finishes.";
         }
         else

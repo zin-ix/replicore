@@ -3,35 +3,134 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         Title="Replicore"
-        Width="460" Height="300"
+        Width="520" Height="340"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
         ExtendsContentIntoTitleBar="True"
         WindowBackdropType="Mica"
         WindowCornerPreference="Round">
 
+    <ui:FluentWindow.Resources>
+        <CubicEase x:Key="EaseOut" EasingMode="EaseOut"/>
+        <BackEase x:Key="EaseOutBack" EasingMode="EaseOut" Amplitude="0.4"/>
+    </ui:FluentWindow.Resources>
+
+    <ui:FluentWindow.Triggers>
+        <EventTrigger RoutedEvent="Window.Loaded">
+            <!-- Entrance: logo pops in, then the title, tagline and footer rise in one after another -->
+            <BeginStoryboard>
+                <Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="Logo" Storyboard.TargetProperty="Opacity"
+                                     From="0" To="1" Duration="0:0:0.35"/>
+                    <DoubleAnimation Storyboard.TargetName="LogoScale" Storyboard.TargetProperty="ScaleX"
+                                     From="0.7" To="1" Duration="0:0:0.6" EasingFunction="{StaticResource EaseOutBack}"/>
+                    <DoubleAnimation Storyboard.TargetName="LogoScale" Storyboard.TargetProperty="ScaleY"
+                                     From="0.7" To="1" Duration="0:0:0.6" EasingFunction="{StaticResource EaseOutBack}"/>
+
+                    <DoubleAnimation Storyboard.TargetName="AppName" Storyboard.TargetProperty="Opacity"
+                                     From="0" To="1" BeginTime="0:0:0.15" Duration="0:0:0.4"/>
+                    <DoubleAnimation Storyboard.TargetName="AppNameShift" Storyboard.TargetProperty="Y"
+                                     From="12" To="0" BeginTime="0:0:0.15" Duration="0:0:0.5" EasingFunction="{StaticResource EaseOut}"/>
+
+                    <DoubleAnimation Storyboard.TargetName="Tagline" Storyboard.TargetProperty="Opacity"
+                                     From="0" To="1" BeginTime="0:0:0.25" Duration="0:0:0.4"/>
+                    <DoubleAnimation Storyboard.TargetName="TaglineShift" Storyboard.TargetProperty="Y"
+                                     From="12" To="0" BeginTime="0:0:0.25" Duration="0:0:0.5" EasingFunction="{StaticResource EaseOut}"/>
+
+                    <DoubleAnimation Storyboard.TargetName="Footer" Storyboard.TargetProperty="Opacity"
+                                     From="0" To="1" BeginTime="0:0:0.4" Duration="0:0:0.4"/>
+                </Storyboard>
+            </BeginStoryboard>
+
+            <!-- Activity: two staggered "sonar" ripples pulse out from the logo -->
+            <BeginStoryboard>
+                <Storyboard BeginTime="0:0:0.5" Duration="0:0:2.6" RepeatBehavior="Forever">
+                    <DoubleAnimation Storyboard.TargetName="Ripple1" Storyboard.TargetProperty="Opacity"
+                                     From="0.55" To="0" Duration="0:0:1.8"/>
+                    <DoubleAnimation Storyboard.TargetName="Ripple1Scale" Storyboard.TargetProperty="ScaleX"
+                                     From="1" To="1.8" Duration="0:0:1.8" EasingFunction="{StaticResource EaseOut}"/>
+                    <DoubleAnimation Storyboard.TargetName="Ripple1Scale" Storyboard.TargetProperty="ScaleY"
+                                     From="1" To="1.8" Duration="0:0:1.8" EasingFunction="{StaticResource EaseOut}"/>
+
+                    <DoubleAnimation Storyboard.TargetName="Ripple2" Storyboard.TargetProperty="Opacity"
+                                     From="0.55" To="0" BeginTime="0:0:0.6" Duration="0:0:1.8"/>
+                    <DoubleAnimation Storyboard.TargetName="Ripple2Scale" Storyboard.TargetProperty="ScaleX"
+                                     From="1" To="1.8" BeginTime="0:0:0.6" Duration="0:0:1.8" EasingFunction="{StaticResource EaseOut}"/>
+                    <DoubleAnimation Storyboard.TargetName="Ripple2Scale" Storyboard.TargetProperty="ScaleY"
+                                     From="1" To="1.8" BeginTime="0:0:0.6" Duration="0:0:1.8" EasingFunction="{StaticResource EaseOut}"/>
+                </Storyboard>
+            </BeginStoryboard>
+
+            <!-- Accent glow behind the logo slowly breathes -->
+            <BeginStoryboard>
+                <Storyboard RepeatBehavior="Forever" AutoReverse="True">
+                    <DoubleAnimation Storyboard.TargetName="Glow" Storyboard.TargetProperty="Opacity"
+                                     From="0.10" To="0.24" Duration="0:0:1.6"/>
+                </Storyboard>
+            </BeginStoryboard>
+        </EventTrigger>
+    </ui:FluentWindow.Triggers>
+
     <!-- Startup screen shown while the first disk scan runs -->
-    <Grid Margin="32">
+    <Grid x:Name="Root" Margin="28">
         <Grid.RowDefinitions>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center">
-            <Border Width="72" Height="72" CornerRadius="16" HorizontalAlignment="Center"
-                    Background="{DynamicResource AccentFillColorDefaultBrush}">
-                <ui:SymbolIcon Symbol="HardDrive20" FontSize="40" HorizontalAlignment="Center" VerticalAlignment="Center"
-                               Foreground="{DynamicResource TextOnAccentFillColorPrimaryBrush}"/>
-            </Border>
-            <TextBlock Text="Replicore" FontSize="32" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,16,0,0"
-                       Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
-            <TextBlock Text="Disk cloning for Windows" Style="{StaticResource CaptionText}" FontSize="13"
-                       HorizontalAlignment="Center" Margin="0,2,0,0"/>
+            <Grid Width="80" Height="80" HorizontalAlignment="Center">
+                <Ellipse x:Name="Glow" Width="200" Height="200" Margin="-60" Opacity="0.1" IsHitTestVisible="False"
+                         Fill="{DynamicResource AccentFillColorDefaultBrush}">
+                    <Ellipse.Effect>
+                        <BlurEffect Radius="70"/>
+                    </Ellipse.Effect>
+                </Ellipse>
+
+                <Border x:Name="Ripple1" CornerRadius="20" BorderThickness="2" Opacity="0" RenderTransformOrigin="0.5,0.5"
+                        BorderBrush="{DynamicResource AccentFillColorDefaultBrush}">
+                    <Border.RenderTransform>
+                        <ScaleTransform x:Name="Ripple1Scale"/>
+                    </Border.RenderTransform>
+                </Border>
+                <Border x:Name="Ripple2" CornerRadius="20" BorderThickness="2" Opacity="0" RenderTransformOrigin="0.5,0.5"
+                        BorderBrush="{DynamicResource AccentFillColorDefaultBrush}">
+                    <Border.RenderTransform>
+                        <ScaleTransform x:Name="Ripple2Scale"/>
+                    </Border.RenderTransform>
+                </Border>
+
+                <Border x:Name="Logo" CornerRadius="20" Opacity="0" RenderTransformOrigin="0.5,0.5"
+                        Background="{DynamicResource AccentFillColorDefaultBrush}">
+                    <Border.RenderTransform>
+                        <ScaleTransform x:Name="LogoScale"/>
+                    </Border.RenderTransform>
+                    <ui:SymbolIcon Symbol="HardDrive20" FontSize="44" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextOnAccentFillColorPrimaryBrush}"/>
+                </Border>
+            </Grid>
+
+            <TextBlock x:Name="AppName" Text="Replicore" FontSize="34" FontWeight="SemiBold" Opacity="0"
+                       HorizontalAlignment="Center" Margin="0,22,0,0"
+                       Foreground="{DynamicResource TextFillColorPrimaryBrush}">
+                <TextBlock.RenderTransform>
+                    <TranslateTransform x:Name="AppNameShift"/>
+                </TextBlock.RenderTransform>
+            </TextBlock>
+            <TextBlock x:Name="Tagline" Text="Disk cloning &amp; system backup for Windows" Style="{StaticResource CaptionText}"
+                       FontSize="13" Opacity="0" HorizontalAlignment="Center" Margin="0,2,0,0">
+                <TextBlock.RenderTransform>
+                    <TranslateTransform x:Name="TaglineShift"/>
+                </TextBlock.RenderTransform>
+            </TextBlock>
         </StackPanel>
 
-        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center">
-            <ui:ProgressRing IsIndeterminate="True" Width="16" Height="16"/>
-            <TextBlock Text="Scanning disks..." Style="{StaticResource CaptionText}" Margin="10,0,0,0" VerticalAlignment="Center"/>
+        <StackPanel x:Name="Footer" Grid.Row="1" Opacity="0">
+            <ProgressBar IsIndeterminate="True"/>
+            <Grid Margin="0,10,0,0">
+                <TextBlock x:Name="StatusText" Text="Starting…" Style="{StaticResource CaptionText}" HorizontalAlignment="Left"/>
+                <TextBlock x:Name="VersionText" Style="{StaticResource CaptionText}" HorizontalAlignment="Right"/>
+            </Grid>
         </StackPanel>
     </Grid>
 </ui:FluentWindow>

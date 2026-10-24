@@ -22,6 +22,9 @@ internal static class NativeDisk
     private const uint IOCTL_DISK_GET_DRIVE_GEOMETRY_EX = 0x000700A0;
     private const uint IOCTL_DISK_UPDATE_PROPERTIES = 0x00070140;
     private const uint IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS = 0x00560000;
+    private const uint FSCTL_GET_NTFS_VOLUME_DATA = 0x00090064;
+    private const uint FSCTL_GET_VOLUME_BITMAP = 0x0009006F;
+    private const int ERROR_MORE_DATA = 234;
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern SafeFileHandle CreateFile(
@@ -32,6 +35,11 @@ internal static class NativeDisk
     private static extern bool DeviceIoControl(
         SafeFileHandle hDevice, uint dwIoControlCode, IntPtr lpInBuffer, uint nInBufferSize,
         [Out] byte[]? lpOutBuffer, uint nOutBufferSize, out uint lpBytesReturned, IntPtr lpOverlapped);
+
+    [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "DeviceIoControl")]
+    private static extern bool DeviceIoControlWithInput(
+        SafeFileHandle hDevice, uint dwIoControlCode, byte[] lpInBuffer, uint nInBufferSize,
+        [Out] byte[] lpOutBuffer, uint nOutBufferSize, out uint lpBytesReturned, IntPtr lpOverlapped);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool FlushFileBuffers(SafeFileHandle hFile);
@@ -92,6 +100,50 @@ internal static class NativeDisk
             extents.Add((BitConverter.ToInt32(output, at), BitConverter.ToInt64(output, at + 8), BitConverter.ToInt64(output, at + 16)));
         }
         return extents;
+    }
+
+    /// <summary>Cluster size and count of an NTFS volume. Throws <see cref="IOException"/> if it isn't NTFS.</summary>
+    public static (long ClusterSize, long ClusterCount) GetNtfsClusterInfo(SafeFileHandle volume)
+    {
+        // NTFS_VOLUME_DATA_BUFFER: TotalClusters is at offset 16, BytesPerCluster at offset 44
+        var output = Query(volume, FSCTL_GET_NTFS_VOLUME_DATA, 128);
+        return (BitConverter.ToUInt32(output, 44), BitConverter.ToInt64(output, 16));
+    }
+
+    /// <summary>
+    /// A volume's allocation bitmap: one bit per cluster, set when the cluster is in use.
+    /// Anything that couldn't be read stays marked as in use, so it is never skipped.
+    /// </summary>
+    public static byte[] GetVolumeBitmap(SafeFileHandle volume, long clusterCount)
+    {
+        var bitmap = new byte[(clusterCount + 7) / 8];
+        Array.Fill(bitmap, (byte)0xFF);
+
+        const int header = 16; // VOLUME_BITMAP_BUFFER: StartingLcn(8) + BitmapSize(8), then the bits
+        var output = new byte[header + 4 * 1024 * 1024];
+        var input = new byte[8];
+        long startingLcn = 0;
+        while (startingLcn < clusterCount)
+        {
+            BitConverter.TryWriteBytes(input, startingLcn);
+            bool done = DeviceIoControlWithInput(volume, FSCTL_GET_VOLUME_BITMAP, input, (uint)input.Length,
+                output, (uint)output.Length, out uint returned, IntPtr.Zero);
+            if (!done)
+            {
+                int error = Marshal.GetLastWin32Error();
+                if (error != ERROR_MORE_DATA) throw new IOException($"Reading the volume bitmap failed (Win32 error {error}).", error);
+            }
+
+            // The returned StartingLcn is rounded down to a multiple of 8, so it maps to a whole byte
+            long returnedStart = BitConverter.ToInt64(output, 0);
+            long filled = returned >= header ? returned - header : output.Length - header;
+            int bytes = (int)Math.Min(filled, bitmap.Length - returnedStart / 8);
+            if (bytes <= 0) break;
+            Array.Copy(output, header, bitmap, returnedStart / 8, bytes);
+            startingLcn = returnedStart + bytes * 8L;
+            if (done) break;
+        }
+        return bitmap;
     }
 
     /// <summary>Tells Windows to re-read a disk's partition table after it was written raw.</summary>
