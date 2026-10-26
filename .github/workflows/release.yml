@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Determine Version
+        id: get_version
+        shell: pwsh
+        run: |
+          $ref = "${{ github.ref_name }}"
+          if ($ref -match '^v\d') {
+            $ver = $ref -replace '^v', ''
+          } else {
+            $ver = "2.0.0"
+          }
+          "APP_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Releasing version: $ver"
+
+      - name: Publish Self-Contained Executable
+        run: |
+          dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:PublishReadyToRun=true --self-contained true -o ./publish
+
+      - name: Build Installer Wizard
+        shell: pwsh
+        run: |
+          iscc /DMyAppVersion="${{ env.APP_VERSION }}" installer.iss
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: |
+            publish/Replicore.exe
+            publish_installer/*.exe

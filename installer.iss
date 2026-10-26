@@ -1,6 +1,8 @@
 ; Inno Setup Script for Replicore v2.0.0
 #define MyAppName "Replicore"
+#ifndef MyAppVersion
 #define MyAppVersion "2.0.0"
+#endif
 #define MyAppPublisher "Zin"
 #define MyAppURL "https://github.com/zin-ix/replicore"
 #define MyAppExeName "Replicore.exe"
@@ -18,7 +20,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=publish_installer
-OutputBaseFilename=Replicore-Setup-v2.0.0
+OutputBaseFilename=Replicore-Setup-v{#MyAppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
