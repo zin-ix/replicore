@@ -2,6 +2,8 @@
 [Bb]in/
 [Oo]bj/
 publish/
+publish_small/
+publish_installer/
 
 ## IDE and Editor files
 .vs/

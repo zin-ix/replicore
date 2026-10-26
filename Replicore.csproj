@@ -11,6 +11,13 @@
     <RootNamespace>Replicore</RootNamespace>
     <Platforms>x64</Platforms>
     
+    <Version>2.0.0</Version>
+    <AssemblyVersion>2.0.0.0</AssemblyVersion>
+    <FileVersion>2.0.0.0</FileVersion>
+    <InformationalVersion>2.0.0</InformationalVersion>
+    <Product>Replicore</Product>
+    <Description>Windows desktop utility for full system image backups and sector-by-sector disk replication.</Description>
+    
     <!-- Single-file self-contained deployment settings -->
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>

@@ -49,6 +49,12 @@ Produces a tiny single executable, but requires the host computer to have the [.
 dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true --self-contained false -o ./publish_small
 ```
 
+### Build Installer Wizard (~53MB)
+Builds an Inno Setup setup wizard (`Replicore-Setup-v2.0.0.exe`) with Start Menu & desktop shortcuts:
+```powershell
+iscc installer.iss
+```
+
 ## Project Structure
 
 ```
