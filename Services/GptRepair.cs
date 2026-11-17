@@ -368,27 +368,6 @@ internal static class GptRepair
                 if (File.Exists(tmpBig)) File.Delete(tmpBig);
             }
 
-            // 1b. GUIDs straddling a 4 KB page edge and a 4 MB scan-window edge must still be replaced
-            var big = new byte[6 * 1024 * 1024];
-            var oldA = Guid.NewGuid().ToByteArray();
-            var newA = Guid.NewGuid().ToByteArray();
-            oldA.CopyTo(big, 4096 - 7);
-            oldA.CopyTo(big, 4 * 1024 * 1024 - 9);
-            string tmpBig = Path.Combine(Path.GetTempPath(), $"replicore_esp_{Guid.NewGuid():N}.img");
-            try
-            {
-                File.WriteAllBytes(tmpBig, big);
-                using (var fs = File.Open(tmpBig, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
-                    UpdateEfiBootGuids(fs.SafeFileHandle, sectorSize, big.Length, 1024, big.Length - 1024, [(oldA, newA)]);
-                var esp = File.ReadAllBytes(tmpBig);
-                if (!esp.AsSpan(4096 - 7, 16).SequenceEqual(newA)) throw new InvalidOperationException("Page-straddling GUID not replaced.");
-                if (!esp.AsSpan(4 * 1024 * 1024 - 9, 16).SequenceEqual(newA)) throw new InvalidOperationException("Window-straddling GUID not replaced.");
-            }
-            finally
-            {
-                if (File.Exists(tmpBig)) File.Delete(tmpBig);
-            }
-
             // 2. Verify 99% shadow-copy cluster-boundary EOF fallback to raw source disk
             var shadowBytes = new byte[61440]; // 4 KB shorter than the 65536-byte partition extent
             var sourceBytes = new byte[65536];
