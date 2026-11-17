@@ -24,6 +24,7 @@ internal static class NativeDisk
     private const uint IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS = 0x00560000;
     private const uint FSCTL_GET_NTFS_VOLUME_DATA = 0x00090064;
     private const uint FSCTL_GET_VOLUME_BITMAP = 0x0009006F;
+    private const uint FSCTL_ALLOW_EXTENDED_DASD_IO = 0x00090083;
     private const int ERROR_MORE_DATA = 234;
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -51,9 +52,9 @@ internal static class NativeDisk
     public static SafeFileHandle OpenForRead(string path) =>
         Open(path, GENERIC_READ, FILE_FLAG_NO_BUFFERING);
 
-    /// <summary>Opens a physical disk for unbuffered, write-through writing.</summary>
+    /// <summary>Opens a physical disk for unbuffered writing.</summary>
     public static SafeFileHandle OpenForWrite(string path) =>
-        Open(path, GENERIC_READ | GENERIC_WRITE, FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH);
+        Open(path, GENERIC_READ | GENERIC_WRITE, FILE_FLAG_NO_BUFFERING);
 
     /// <summary>Opens a volume with no data access — enough for metadata queries like disk extents.</summary>
     public static SafeFileHandle OpenForQuery(string path) => Open(path, 0, 0);
@@ -144,6 +145,15 @@ internal static class NativeDisk
             if (done) break;
         }
         return bitmap;
+    }
+
+    /// <summary>
+    /// Tells the file system driver on a volume or shadow copy handle not to clip reads at the end
+    /// of the cluster area, so the tail sectors of the partition (the NTFS backup boot sector) can be read.
+    /// </summary>
+    public static void AllowExtendedDasdIo(SafeFileHandle volume)
+    {
+        DeviceIoControl(volume, FSCTL_ALLOW_EXTENDED_DASD_IO, IntPtr.Zero, 0, null, 0, out _, IntPtr.Zero);
     }
 
     /// <summary>Tells Windows to re-read a disk's partition table after it was written raw.</summary>

@@ -24,6 +24,22 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.Length == 1 && e.Args[0] == "--self-check")
+        {
+            try
+            {
+                GptRepair.SelfCheck();
+                Console.WriteLine("SELF-CHECK PASS");
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"SELF-CHECK FAIL: {ex.Message}");
+                Shutdown(1);
+            }
+            return;
+        }
+
         // Match the Windows light/dark setting before the first window is shown
         ApplicationThemeManager.ApplySystemTheme();
 

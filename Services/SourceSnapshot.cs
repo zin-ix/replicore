@@ -24,7 +24,7 @@ internal sealed class SourceSnapshot : IDisposable
     private readonly List<ManagementObject> _shadowCopies = new();
     public List<Region> Regions { get; } = new();
 
-    private SourceSnapshot() { }
+    internal SourceSnapshot() { }
 
     /// <param name="driveLetters">Mounted volumes on the source disk, e.g. "C:".</param>
     public static SourceSnapshot Create(int sourceDiskIndex, SafeFileHandle sourceDisk, int sectorSize,
@@ -61,6 +61,7 @@ internal sealed class SourceSnapshot : IDisposable
                     var (shadow, device) = CreateShadowCopy(letter);
                     snapshot._shadowCopies.Add(shadow);
                     var handle = NativeDisk.OpenForRead(device);
+                    NativeDisk.AllowExtendedDasdIo(handle);
                     long length = Math.Min(extent.Length, NativeDisk.GetLength(handle));
                     snapshot.Regions.Add(new Region(letter, extent.StartingOffset, length, handle));
                     log($"Created a shadow copy of {letter} so it can be copied while in use.");
